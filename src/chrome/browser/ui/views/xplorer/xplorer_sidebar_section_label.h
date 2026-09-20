@@ -24,6 +24,9 @@ class XplorerSidebarSectionLabel : public views::Label {
 
   gfx::Size CalculatePreferredSize(
       const views::SizeBounds& available_size) const override;
+
+ protected:
+  void OnThemeChanged() override;
 };
 
 }  // namespace xplorer

@@ -3,23 +3,35 @@
 
 #include "chrome/browser/ui/views/xplorer/xplorer_sidebar_section_label.h"
 
-#include "chrome/browser/ui/layout_constants.h"
+#include "chrome/browser/ui/color/chrome_color_id.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
-#include "ui/gfx/geometry/insets.h"
+#include "ui/color/color_provider.h"
+#include "ui/gfx/font.h"
 #include "ui/views/controls/label.h"
-#include "ui/views/view_class_properties.h"
 
 namespace xplorer {
 
 namespace {
-constexpr int kSectionHeight = 28;
+constexpr int kSectionHeight = 18;
 }  // namespace
 
 XplorerSidebarSectionLabel::XplorerSidebarSectionLabel(
     const std::u16string& text)
     : views::Label(text) {
   SetHorizontalAlignment(gfx::ALIGN_LEFT);
-  SetFontList(font_list().DeriveWithSizeDelta(-1));
+  // Arc section labels are small, medium, and quiet. Not a second title.
+  SetFontList(font_list()
+                  .DeriveWithSizeDelta(-3)
+                  .DeriveWithWeight(gfx::Font::Weight::MEDIUM));
+}
+
+void XplorerSidebarSectionLabel::OnThemeChanged() {
+  views::Label::OnThemeChanged();
+  const ui::ColorProvider* colors = GetColorProvider();
+  if (!colors) {
+    return;
+  }
+  SetEnabledColor(colors->GetColor(kColorTabForegroundInactiveFrameInactive));
 }
 
 XplorerSidebarSectionLabel::~XplorerSidebarSectionLabel() = default;
