@@ -477,6 +477,70 @@ def patch_hover_close(src: Path):
     print(f"  edited: {path}")
 
 
+def patch_quiet_tab_type(src: Path):
+    """Arc/Dia: inactive vertical-tab titles recede; the active row stays strong."""
+    layout = src / "chrome/browser/ui/views/tabs/common/tab_view_vertical_layout.cc"
+    ltext = layout.read_text()
+    if "XPLORER: Arc quiet type" not in ltext:
+        old = (
+            "void TabViewVerticalLayout::OnInstalled(views::View* host) {\n"
+            "  TabView::LayoutManager::OnInstalled(host);\n"
+        )
+        new = (
+            "void TabViewVerticalLayout::OnInstalled(views::View* host) {\n"
+            "  TabView::LayoutManager::OnInstalled(host);\n"
+            "  // XPLORER: Arc quiet type. A step smaller than the horizontal\n"
+            "  // tab face, so the sidebar reads as a list, not a tab strip.\n"
+            "  if (TabView().title_) {\n"
+            "    TabView().title_->SetFontList(\n"
+            "        TabView().title_->font_list().DeriveWithSizeDelta(-1));\n"
+            "  }\n"
+        )
+        if old not in ltext:
+            sys.exit(f"ANCHOR NOT FOUND in {layout} (quiet type)")
+        layout.write_text(ltext.replace(old, new, 1))
+        print(f"  edited: {layout}")
+    else:
+        print(f"  skip (already applied): {layout}")
+
+    view = src / "chrome/browser/ui/views/tabs/common/tab_view.cc"
+    vtext = view.read_text()
+    if "XPLORER: Arc quiet type" not in vtext:
+        old_inc = '#include "chrome/browser/ui/layout_constants.h"\n'
+        new_inc = (
+            '#include "chrome/browser/ui/color/chrome_color_id.h"  // XPLORER\n'
+            '#include "chrome/browser/ui/layout_constants.h"\n'
+            '#include "ui/gfx/color_utils.h"  // XPLORER\n'
+        )
+        if old_inc not in vtext:
+            sys.exit(f"ANCHOR NOT FOUND in {view} (includes)")
+        vtext = vtext.replace(old_inc, new_inc, 1)
+        old_color = (
+            "  TabStyle::TabColors colors = tab_styling()->CalculateTargetColors();\n"
+            "  title_->SetEnabledColor(colors.foreground_color);\n"
+        )
+        new_color = (
+            "  TabStyle::TabColors colors = tab_styling()->CalculateTargetColors();\n"
+            "  SkColor foreground = colors.foreground_color;\n"
+            "  // XPLORER: Arc quiet type. Inactive rows recede into the sidebar;\n"
+            "  // the active title stays at full strength.\n"
+            "  if (orientation_ == TabStripOrientation::kVertical && !IsActive() &&\n"
+            "      GetColorProvider()) {\n"
+            "    const SkColor sidebar = GetColorProvider()->GetColor(\n"
+            "        IsFrameActive() ? kColorTabBackgroundInactiveFrameActive\n"
+            "                        : kColorTabBackgroundInactiveFrameInactive);\n"
+            "    foreground = color_utils::AlphaBlend(foreground, sidebar, 0.52f);\n"
+            "  }\n"
+            "  title_->SetEnabledColor(foreground);\n"
+        )
+        if old_color not in vtext:
+            sys.exit(f"ANCHOR NOT FOUND in {view} (UpdateColors)")
+        view.write_text(vtext.replace(old_color, new_color, 1))
+        print(f"  edited: {view}")
+    else:
+        print(f"  skip (already applied): {view}")
+
+
 def patch_vertical_sidebar(src: Path):
     """Arc-style sidebar chrome in the vertical tab strip.
 
@@ -2680,6 +2744,7 @@ def main(src: Path):
     patch_soft_tab_pills(src)
     patch_quiet_new_tab_row(src)
     patch_hover_close(src)
+    patch_quiet_tab_type(src)
 
     patch_xplorer_settings_access(src)
 
