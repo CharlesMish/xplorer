@@ -99,6 +99,16 @@ async function refreshAccount() {
   setError('account-error', '');
 }
 
+async function fetchLogin(path, options = {}) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 8000);
+  try {
+    return await fetch(path, { ...options, signal: ctrl.signal, cache: 'no-store' });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function startGrokLogin() {
   const button = document.getElementById('sign-in');
   setError('account-error', '');
@@ -107,7 +117,7 @@ async function startGrokLogin() {
     button.textContent = 'Opening sign-in…';
   }
   try {
-    const start = await fetch('/api/grok/login', {
+    const start = await fetchLogin('/api/grok/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ open_tab: false }),
@@ -119,7 +129,7 @@ async function startGrokLogin() {
     }
     // grok login can take up to a minute to print the auth URL.
     for (let i = 0; i < 240; i++) {
-      const poll = await fetch('/api/grok/login', { cache: 'no-store' });
+      const poll = await fetchLogin('/api/grok/login');
       const status = await poll.json();
       if (status.logged_in || status.has_token) {
         show('account');
@@ -141,7 +151,7 @@ async function startGrokLogin() {
       setError('account-error', 'Sign-in did not open. Try again.');
     }
   } catch (err) {
-    setError('account-error', 'Could not start Grok sign-in.');
+    setError('account-error', 'Sign-in did not open. Try again.');
     console.error(err);
   }
   if (button) {

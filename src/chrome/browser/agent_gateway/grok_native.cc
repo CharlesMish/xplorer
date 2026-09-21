@@ -24,6 +24,7 @@
 #include <map>
 #include <set>
 #include <utility>
+#include <algorithm>
 #include <vector>
 
 #include "base/base_paths.h"
@@ -1121,26 +1122,41 @@ bool GrokAuthFileLooksValid() {
 }
 
 base::DictValue GrokLoginStatusDict() {
-  GrokLoginState& s = LoginState();
-  base::AutoLock lock(s.lock);
+  bool running = false;
+  bool done = false;
+  bool ok = false;
+  std::string url;
+  std::string error;
+  std::string message;
+  {
+    // Copy under the lock, then drop it. This function is also called while
+    // the caller already holds the lock; locking again deadlocks the gateway
+    // and freezes "Opening sign-in…".
+    GrokLoginState& s = LoginState();
+    base::AutoLock lock(s.lock);
+    running = s.running;
+    done = s.done;
+    ok = s.ok;
+    url = s.url;
+    error = s.error;
+    message = s.message;
+  }
   base::DictValue d;
-  d.Set("running", s.running);
-  d.Set("done", s.done);
-  d.Set("ok", s.ok);
-  // Chat and this card must agree. A finished login attempt is not the same
-  // as having a token the chat request can send.
+  d.Set("running", running);
+  d.Set("done", done);
+  d.Set("ok", ok);
   const bool has_token = !LoadGrokOAuthAccessToken().empty();
   d.Set("logged_in", has_token);
   d.Set("has_token", has_token);
   const std::string account = LoadGrokAccountLabel();
   if (!account.empty())
     d.Set("account", account);
-  if (!s.url.empty())
-    d.Set("url", s.url);
-  if (!s.error.empty())
-    d.Set("error", s.error);
-  if (!s.message.empty())
-    d.Set("message", s.message);
+  if (!url.empty())
+    d.Set("url", url);
+  if (!error.empty())
+    d.Set("error", error);
+  if (!message.empty())
+    d.Set("message", message);
   return d;
 }
 
@@ -1165,6 +1181,13 @@ void RunGrokLoginOAuthWorker() {
   if (pipe(pipe_fds) == 0) {
     const int devnull = open("/dev/null", O_RDWR);
     base::LaunchOptions options;
+    // Write the session into the same home we read, not an empty ~/.grok.
+    for (const base::FilePath& auth : GrokAuthFiles()) {
+      if (base::PathExists(auth) && auth.DirName().BaseName().value() != ".grok") {
+        options.environment["GROK_HOME"] = auth.DirName().AsUTF8Unsafe();
+        break;
+      }
+    }
     options.fds_to_remap.emplace_back(pipe_fds[1], STDOUT_FILENO);
     options.fds_to_remap.emplace_back(pipe_fds[1], STDERR_FILENO);
     if (devnull >= 0)
@@ -1344,25 +1367,30 @@ base::DictValue SignOutGrokOAuth() {
 // Kick off OAuth login if not already running. Returns current status dict.
 // |open_tab| is false for the welcome wizard, which navigates the current tab.
 base::DictValue StartGrokLoginOAuth(bool open_tab) {
+  bool already = false;
   {
     base::AutoLock lock(LoginState().lock);
-    if (LoginState().running)
-      return GrokLoginStatusDict();
-    LoginState().running = true;
-    LoginState().done = false;
-    LoginState().ok = false;
-    LoginState().open_tab = open_tab;
-    LoginState().url.clear();
-    LoginState().error.clear();
-    LoginState().message = open_tab ? "Opening browser for sign-in…"
-                                    : "Continue sign-in in this tab.";
+    already = LoginState().running;
+    if (!already) {
+      LoginState().running = true;
+      LoginState().done = false;
+      LoginState().ok = false;
+      LoginState().open_tab = open_tab;
+      LoginState().url.clear();
+      LoginState().error.clear();
+      LoginState().message = open_tab ? "Opening browser for sign-in…"
+                                      : "Continue sign-in in this tab.";
+    }
   }
-  content::GetUIThreadTaskRunner({})->PostTask(
-      FROM_HERE, base::BindOnce(&WatchSignInTabs));
-  base::ThreadPool::PostTask(FROM_HERE,
-                             {base::MayBlock(), base::TaskPriority::USER_VISIBLE,
-                              base::TaskShutdownBehavior::CONTINUE_ON_SHUTDOWN},
-                             base::BindOnce(&RunGrokLoginOAuthWorker));
+  if (!already) {
+    content::GetUIThreadTaskRunner({})->PostTask(
+        FROM_HERE, base::BindOnce(&WatchSignInTabs));
+    base::ThreadPool::PostTask(
+        FROM_HERE,
+        {base::MayBlock(), base::TaskPriority::USER_VISIBLE,
+         base::TaskShutdownBehavior::CONTINUE_ON_SHUTDOWN},
+        base::BindOnce(&RunGrokLoginOAuthWorker));
+  }
   return GrokLoginStatusDict();
 }
 
@@ -2977,17 +3005,42 @@ base::CommandLine BuildPageSummarizeCommand(const std::string& url,
 constexpr char kGrokChatProxy[] =
     "https://cli-chat-proxy.grok.com/v1/chat/completions";
 
-std::string LoadGrokAccountLabel() {
+std::vector<base::FilePath> GrokAuthFiles() {
+  std::vector<base::FilePath> files;
+  auto add = [&](base::FilePath path) {
+    if (path.empty())
+      return;
+    if (std::find(files.begin(), files.end(), path) == files.end())
+      files.push_back(path);
+  };
+  // The CLI honors GROK_HOME. This machine also keeps a session in
+  // ~/.grok-apikey. Reading only ~/.grok made a finished login look signed out.
+  if (const char* grok_home = getenv("GROK_HOME"); grok_home && *grok_home)
+    add(base::FilePath::FromUTF8Unsafe(grok_home).AppendASCII("auth.json"));
   base::FilePath home;
   if (!base::PathService::Get(base::DIR_HOME, &home) || home.empty()) {
     if (const char* h = getenv("HOME"); h && *h)
       home = base::FilePath::FromUTF8Unsafe(h);
   }
-  if (home.empty())
-    return {};
-  std::string contents;
-  if (!base::ReadFileToString(
-          home.AppendASCII(".grok").AppendASCII("auth.json"), &contents))
+  if (!home.empty()) {
+    add(home.AppendASCII(".grok-apikey").AppendASCII("auth.json"));
+    add(home.AppendASCII(".grok").AppendASCII("auth.json"));
+  }
+  return files;
+}
+
+std::string ReadFirstAuthFile() {
+  for (const base::FilePath& path : GrokAuthFiles()) {
+    std::string contents;
+    if (base::ReadFileToString(path, &contents) && contents.size() > 20)
+      return contents;
+  }
+  return {};
+}
+
+std::string LoadGrokAccountLabel() {
+  const std::string contents = ReadFirstAuthFile();
+  if (contents.empty())
     return {};
   std::optional<base::DictValue> root =
       base::JSONReader::ReadDict(contents, base::JSON_PARSE_RFC);
@@ -3010,16 +3063,8 @@ std::string LoadGrokAccountLabel() {
 }
 
 std::string LoadGrokOAuthAccessToken() {
-  base::FilePath home;
-  if (!base::PathService::Get(base::DIR_HOME, &home) || home.empty()) {
-    if (const char* h = getenv("HOME"); h && *h)
-      home = base::FilePath::FromUTF8Unsafe(h);
-  }
-  if (home.empty())
-    return {};
-  std::string contents;
-  if (!base::ReadFileToString(
-          home.AppendASCII(".grok").AppendASCII("auth.json"), &contents))
+  const std::string contents = ReadFirstAuthFile();
+  if (contents.empty())
     return {};
   std::optional<base::DictValue> root =
       base::JSONReader::ReadDict(contents, base::JSON_PARSE_RFC);
