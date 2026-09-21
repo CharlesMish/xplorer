@@ -2811,8 +2811,12 @@ void PumpGrokOAuthChat(
   std::string json;
   base::JSONWriter::Write(body, &json);
   base::FilePath temp_dir;
-  if (!base::GetTempDir(&temp_dir))
-    temp_dir = base::FilePath("/tmp");
+  if (!base::GetTempDir(&temp_dir)) {
+    io_task_runner->PostTask(
+        FROM_HERE, base::BindOnce(&SendStreamError, server, connection_id,
+                                  "Could not write the Grok request."));
+    return;
+  }
   base::FilePath body_path =
       temp_dir.AppendASCII("xplorer-grok-" + conv_id + ".json");
   if (!base::WriteFile(body_path, json)) {
@@ -2982,8 +2986,10 @@ base::DictValue RunOAuthChatBlocking(const std::string& message,
   std::string json;
   base::JSONWriter::Write(body, &json);
   base::FilePath temp_dir;
-  if (!base::GetTempDir(&temp_dir))
-    temp_dir = base::FilePath("/tmp");
+  if (!base::GetTempDir(&temp_dir)) {
+    out.Set("error", "Could not write the Grok request.");
+    return out;
+  }
   base::FilePath body_path = temp_dir.AppendASCII("xplorer-grok-once.json");
   if (!base::WriteFile(body_path, json)) {
     out.Set("error", "Could not write the Grok request.");
