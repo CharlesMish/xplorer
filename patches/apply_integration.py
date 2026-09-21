@@ -569,6 +569,74 @@ def patch_quiet_tab_type(src: Path):
         print(f"  skip (already applied): {view}")
 
 
+def patch_toolbar_plane(src: Path):
+    """Arc/Dia: the toolbar is the sidebar's plane, not a Chrome strip."""
+    toolbar = src / "chrome/browser/ui/views/toolbar/toolbar_view.cc"
+    text = toolbar.read_text()
+    if "XPLORER: toolbar plane" in text:
+        print(f"  skip (already applied): {toolbar}")
+    else:
+        old = (
+            "  if (display_mode_ == DisplayMode::kNormal) {\n"
+            "    SetBackground(std::make_unique<CustomCornersBackground>(\n"
+            "        *this, *browser_view_,\n"
+            "        /*primary_color=*/CustomCornersBackground::ToolbarTheme(),\n"
+            "        /*corner_color=*/CustomCornersBackground::FrameTheme()));\n"
+            "  } else if (display_mode_ == DisplayMode::kCustomTab) {\n"
+        )
+        new = (
+            "  if (display_mode_ == DisplayMode::kNormal) {\n"
+            "    const auto* vts =\n"
+            "        tabs::VerticalTabStripStateController::From(browser_);\n"
+            "    // XPLORER: toolbar plane. With vertical tabs the toolbar is\n"
+            "    // the same flat surface as the sidebar. The omnibox is the\n"
+            "    // only chrome on that plane.\n"
+            "    if (vts && vts->ShouldDisplayVerticalTabs()) {\n"
+            "      views::SetCascadingColorProviderColor(\n"
+            "          this, views::kCascadingBackgroundColor,\n"
+            "          ui::kColorSysSurface3);\n"
+            "      SetBackground(std::make_unique<CustomCornersBackground>(\n"
+            "          *this, *browser_view_,\n"
+            "          /*primary_color=*/ui::kColorSysSurface3,\n"
+            "          /*corner_color=*/ui::kColorSysSurface3));\n"
+            "    } else {\n"
+            "      SetBackground(std::make_unique<CustomCornersBackground>(\n"
+            "          *this, *browser_view_,\n"
+            "          /*primary_color=*/CustomCornersBackground::ToolbarTheme(),\n"
+            "          /*corner_color=*/CustomCornersBackground::FrameTheme()));\n"
+            "    }\n"
+            "  } else if (display_mode_ == DisplayMode::kCustomTab) {\n"
+        )
+        if old not in text:
+            sys.exit(f"ANCHOR NOT FOUND in {toolbar} (toolbar background)")
+        toolbar.write_text(text.replace(old, new, 1))
+        print(f"  edited: {toolbar}")
+
+    layout = src / (
+        "chrome/browser/ui/views/frame/layout/"
+        "browser_view_tabbed_layout_impl.cc"
+    )
+    ltext = layout.read_text()
+    if "XPLORER: toolbar plane" in ltext:
+        print(f"  skip (already applied): {layout}")
+        return
+    old = (
+        "  views().multi_contents_view->SetShouldShowTopSeparator(\n"
+        "      separator_info.multi_contents_separator);\n"
+    )
+    new = (
+        "  // XPLORER: toolbar plane. A hairline under the address bar makes\n"
+        "  // the toolbar a Chrome strip again.\n"
+        "  views().multi_contents_view->SetShouldShowTopSeparator(\n"
+        "      separator_info.multi_contents_separator &&\n"
+        "      layout_data_->tab_strip_type != TabStripType::kVertical);\n"
+    )
+    if old not in ltext:
+        sys.exit(f"ANCHOR NOT FOUND in {layout} (top separator)")
+    layout.write_text(ltext.replace(old, new, 1))
+    print(f"  edited: {layout}")
+
+
 def patch_quiet_toolbar_edge(src: Path):
     """Arc/Dia: no profile chip or divider on the toolbar's right edge."""
     path = src / "chrome/browser/ui/views/toolbar/toolbar_view.cc"
@@ -3211,6 +3279,7 @@ def main(src: Path):
     patch_favorites_density(src)
     patch_quiet_toolbar_pins(src)
     patch_quiet_toolbar_edge(src)
+    patch_toolbar_plane(src)
 
     patch_xplorer_settings_access(src)
 
