@@ -43,6 +43,8 @@ class WelcomeFlowTest(unittest.TestCase):
         self.assertIn("name: 'Google Chrome'", JS)
         self.assertIn("Full Disk Access", JS)
         self.assertIn("/api/system/privacy", JS)
+        self.assertIn("Allow Full Disk Access", JS)
+        self.assertIn("syncImportAction", JS)
 
     def test_import_and_default_endpoints(self):
         self.assertIn("/api/import/browsers", JS)

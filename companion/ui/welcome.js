@@ -58,6 +58,14 @@ function setError(id, message) {
   el.textContent = message || '';
 }
 
+function syncImportAction() {
+  const button = document.getElementById('do-import');
+  if (!button) return;
+  button.textContent = state.browserLocked
+    ? 'Allow Full Disk Access'
+    : 'Import';
+}
+
 async function startGrokLogin() {
   const button = document.getElementById('sign-in');
   setError('account-error', '');
@@ -140,6 +148,8 @@ async function loadBrowsers() {
   state.browsers = offered;
   list.replaceChildren();
   if (!offered.length) {
+    state.browserLocked = false;
+    syncImportAction();
     list.textContent = 'No other browsers were found. You can skip this step.';
     return;
   }
@@ -147,6 +157,7 @@ async function loadBrowsers() {
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'choice' + (i === 0 ? ' selected' : '');
+    button.setAttribute('aria-pressed', i === 0 ? 'true' : 'false');
     button.innerHTML = `<strong></strong><small></small>`;
     button.querySelector('strong').textContent = browser.name || 'Browser';
     const locked = browser.index < 0;
@@ -156,13 +167,19 @@ async function loadBrowsers() {
     button.addEventListener('click', () => {
       state.browserIndex = browser.index;
       state.browserLocked = locked;
-      list.querySelectorAll('.choice').forEach((el) => el.classList.remove('selected'));
+      list.querySelectorAll('.choice').forEach((el) => {
+        el.classList.remove('selected');
+        el.setAttribute('aria-pressed', 'false');
+      });
       button.classList.add('selected');
+      button.setAttribute('aria-pressed', 'true');
+      syncImportAction();
     });
     list.appendChild(button);
   });
   state.browserIndex = offered[0].index;
   state.browserLocked = offered[0].index < 0;
+  syncImportAction();
 }
 
 async function openPrivacySettings() {
