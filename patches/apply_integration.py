@@ -569,6 +569,38 @@ def patch_quiet_tab_type(src: Path):
         print(f"  skip (already applied): {view}")
 
 
+def patch_hide_idle_reload(src: Path):
+    """Arc/Dia: no idle reload button. Stop still appears while a page loads."""
+    path = src / "chrome/browser/ui/views/toolbar/reload_button.cc"
+    text = path.read_text()
+    if "XPLORER: hide idle reload" in text:
+        print(f"  skip (already applied): {path}")
+        return
+    old = (
+        "  visible_mode_ = mode;\n"
+        "\n"
+        "  UpdateCachedTooltipText();\n"
+        "  OnPropertyChanged(&visible_mode_, views::PropertyEffects::kNone);\n"
+        "}\n"
+    )
+    new = (
+        "  visible_mode_ = mode;\n"
+        "\n"
+        "  // XPLORER: hide idle reload. The circle next to Back is Chrome\n"
+        "  // chrome. Stop still appears while a page is loading. Reload\n"
+        "  // stays on Cmd-R and in the app menu.\n"
+        "  SetVisible(visible_mode_ == Mode::kStop);\n"
+        "\n"
+        "  UpdateCachedTooltipText();\n"
+        "  OnPropertyChanged(&visible_mode_, views::PropertyEffects::kNone);\n"
+        "}\n"
+    )
+    if old not in text:
+        sys.exit(f"ANCHOR NOT FOUND in {path} (SetVisibleMode)")
+    path.write_text(text.replace(old, new, 1))
+    print(f"  edited: {path}")
+
+
 def patch_quiet_toolbar_scale(src: Path):
     """Arc/Dia: the address pill and nav buttons are shorter than Chrome's."""
     constants = src / "chrome/browser/ui/layout_constants.cc"
@@ -3462,6 +3494,7 @@ def main(src: Path):
     patch_toolbar_plane(src)
     patch_page_card(src)
     patch_quiet_toolbar_scale(src)
+    patch_hide_idle_reload(src)
 
     patch_xplorer_settings_access(src)
 
