@@ -19,6 +19,7 @@ namespace views {
 class ImageButton;
 class Textfield;
 class View;
+class Widget;
 }  // namespace views
 
 namespace xplorer {
@@ -45,6 +46,8 @@ class XplorerSidebarChromeView : public views::View,
   // views::TextfieldController:
   bool HandleKeyEvent(views::Textfield* sender,
                       const ui::KeyEvent& key_event) override;
+  bool HandleMouseEvent(views::Textfield* sender,
+                        const ui::MouseEvent& mouse_event) override;
 
   // TabStripModelObserver:
   void OnTabStripModelChanged(
@@ -57,6 +60,9 @@ class XplorerSidebarChromeView : public views::View,
 
  private:
   void NavigateFromField();
+  void NavigateFromText(const std::u16string& text);
+  void ShowUrlPopup();
+  void CloseUrlPopup();
   void UpdateUrlField();
   void UpdateNavButtons();
   void ReloadChrome();
@@ -71,6 +77,9 @@ class XplorerSidebarChromeView : public views::View,
   raw_ptr<views::ImageButton> forward_button_ = nullptr;
   raw_ptr<views::ImageButton> reload_button_ = nullptr;
   raw_ptr<views::Textfield> url_field_ = nullptr;
+  raw_ptr<views::Textfield> popup_field_ = nullptr;
+  raw_ptr<views::Widget> url_popup_ = nullptr;
+  GURL full_url_;
   bool showing_stop_ = false;
   bool observing_tabs_ = false;
 

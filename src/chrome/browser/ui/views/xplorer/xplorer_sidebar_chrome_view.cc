@@ -22,6 +22,7 @@
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "components/omnibox/browser/autocomplete_classifier.h"
 #include "components/omnibox/browser/autocomplete_match.h"
+#include "components/url_formatter/elide_url.h"
 #include "components/url_formatter/url_formatter.h"
 #include "components/vector_icons/vector_icons.h"
 #include "content/public/browser/web_contents.h"
@@ -45,6 +46,7 @@
 #include "ui/views/focus/focus_manager.h"
 #include "ui/views/layout/box_layout.h"
 #include "ui/views/view_class_properties.h"
+#include "ui/views/widget/widget.h"
 
 namespace xplorer {
 
@@ -78,11 +80,17 @@ std::u16string DisplayUrl(const GURL& url) {
       url.SchemeIs(content::kChromeUIScheme)) {
     return {};
   }
+  // Arc shows the domain in the sidebar. The full URL lives in the popup.
+  return url_formatter::FormatUrlForDisplayOmitSchemePathAndTrivialSubdomains(
+      url);
+}
+
+std::u16string FullUrl(const GURL& url) {
+  if (!url.is_valid())
+    return {};
   return url_formatter::FormatUrl(
-      url,
-      url_formatter::kFormatUrlOmitDefaults | url_formatter::kFormatUrlOmitHTTPS |
-          url_formatter::kFormatUrlOmitTrivialSubdomains,
-      base::UnescapeRule::SPACES, nullptr, nullptr, nullptr);
+      url, url_formatter::kFormatUrlOmitNothing, base::UnescapeRule::NONE,
+      nullptr, nullptr, nullptr);
 }
 
 class XplorerSpaceSwatch : public views::View {
@@ -211,6 +219,7 @@ XplorerSidebarChromeView::XplorerSidebarChromeView(
   auto* field = capsule->AddChildView(std::make_unique<XplorerUrlField>(this));
   url_field_ = field;
   field->SetController(this);
+  field->SetReadOnly(true);
   field->SetPlaceholderText(u"Search or Enter URL");
   field->SetBorder(views::CreateEmptyBorder(gfx::Insets()));
   field->SetBackgroundColor(SK_ColorTRANSPARENT);
@@ -229,6 +238,16 @@ XplorerSidebarChromeView::XplorerSidebarChromeView(
   onboarding_subscription_ = grok_companion::AddOnboardingChangedCallback(
       base::BindRepeating(&XplorerSidebarChromeView::ReloadChrome,
                           base::Unretained(this)));
+  // Traffic lights sit in the top of the sidebar. Keep the address row below
+  // them, then pinned apps, then the space name.
+  auto* spacer = AddChildView(std::make_unique<views::View>());
+  spacer->SetPreferredSize(gfx::Size(1, 28));
+  ReorderChildView(spacer, 0);
+  if (nav)
+    ReorderChildView(nav, 1);
+  if (pins_)
+    ReorderChildView(pins_, 2);
+
   ReloadChrome();
   UpdateUrlField();
   UpdateNavButtons();
@@ -240,10 +259,7 @@ XplorerSidebarChromeView::~XplorerSidebarChromeView() {
 }
 
 void XplorerSidebarChromeView::FocusUrlField() {
-  if (!url_field_)
-    return;
-  url_field_->RequestFocus();
-  url_field_->SelectAll(false);
+  ShowUrlPopup();
 }
 
 void XplorerSidebarChromeView::OnUrlFieldBlur() {
@@ -256,7 +272,11 @@ bool XplorerSidebarChromeView::HandleKeyEvent(
   if (sender != url_field_ || key_event.type() != ui::EventType::kKeyPressed)
     return false;
   if (key_event.key_code() == ui::VKEY_RETURN) {
-    NavigateFromField();
+    if (sender == popup_field_ && popup_field_)
+      NavigateFromText(std::u16string(popup_field_->GetText()));
+    else
+      NavigateFromField();
+    CloseUrlPopup();
     return true;
   }
   if (key_event.key_code() == ui::VKEY_ESCAPE) {
@@ -305,10 +325,71 @@ void XplorerSidebarChromeView::RunCommand(int command_id) {
   UpdateNavButtons();
 }
 
-void XplorerSidebarChromeView::NavigateFromField() {
-  if (!browser_ || !profile_ || !url_field_)
+bool XplorerSidebarChromeView::HandleMouseEvent(
+    views::Textfield* sender,
+    const ui::MouseEvent& mouse_event) {
+  if (sender != url_field_ ||
+      mouse_event.type() != ui::EventType::kMousePressed)
+    return false;
+  ShowUrlPopup();
+  return true;
+}
+
+void XplorerSidebarChromeView::CloseUrlPopup() {
+  popup_field_ = nullptr;
+  if (views::Widget* popup = url_popup_) {
+    url_popup_ = nullptr;
+    popup->Close();
+  }
+}
+
+void XplorerSidebarChromeView::ShowUrlPopup() {
+  if (!url_field_ || !url_field_->GetWidget())
     return;
-  const std::u16string text(url_field_->GetText());
+  CloseUrlPopup();
+  auto* widget = new views::Widget();
+  views::Widget::InitParams params(
+      views::Widget::InitParams::NATIVE_WIDGET_OWNS_WIDGET,
+      views::Widget::InitParams::TYPE_POPUP);
+  params.opacity = views::Widget::InitParams::WindowOpacity::kTranslucent;
+  params.shadow_type = views::Widget::InitParams::ShadowType::kDrop;
+  params.parent = url_field_->GetWidget()->GetNativeView();
+  const gfx::Rect anchor = url_field_->GetBoundsInScreen();
+  params.bounds = gfx::Rect(anchor.x(), anchor.bottom() + 6,
+                            std::max(anchor.width(), 420), 52);
+  widget->Init(std::move(params));
+
+  auto contents = std::make_unique<views::View>();
+  contents->SetBackground(
+      views::CreateRoundedRectBackground(ui::kColorSysSurface3, 12.f));
+  auto* layout = contents->SetLayoutManager(std::make_unique<views::BoxLayout>(
+      views::BoxLayout::Orientation::kHorizontal, gfx::Insets::VH(8, 12)));
+  auto* field = contents->AddChildView(std::make_unique<views::Textfield>());
+  popup_field_ = field;
+  field->SetController(this);
+  field->SetBorder(views::CreateEmptyBorder(gfx::Insets()));
+  field->SetBackgroundColor(SK_ColorTRANSPARENT);
+  field->SetTextColorId(ui::kColorSysOnSurface);
+  field->SetPlaceholderText(u"Search or Enter URL");
+  field->SetAccessibleName(u"Search or Enter URL");
+  field->SetText(FullUrl(full_url_));
+  layout->SetFlexForView(field, 1);
+  widget->SetContentsView(std::move(contents));
+  widget->Show();
+  url_popup_ = widget;
+  if (popup_field_) {
+    popup_field_->RequestFocus();
+    popup_field_->SelectAll(false);
+  }
+}
+
+void XplorerSidebarChromeView::NavigateFromField() {
+  NavigateFromText(FullUrl(full_url_));
+}
+
+void XplorerSidebarChromeView::NavigateFromText(const std::u16string& text) {
+  if (!browser_ || !profile_)
+    return;
   if (text.empty())
     return;
   AutocompleteClassifier* classifier =
@@ -333,8 +414,8 @@ void XplorerSidebarChromeView::UpdateUrlField() {
     return;
   tabs::TabInterface* tab = browser_->GetActiveTabInterface();
   content::WebContents* contents = tab ? tab->GetContents() : nullptr;
-  const std::u16string shown =
-      contents ? DisplayUrl(contents->GetVisibleURL()) : std::u16string();
+  full_url_ = contents ? contents->GetVisibleURL() : GURL();
+  const std::u16string shown = DisplayUrl(full_url_);
   if (url_field_->GetText() != shown)
     url_field_->SetText(shown);
 }

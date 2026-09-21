@@ -70,10 +70,12 @@
 #include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
 #include "chrome/browser/ui/navigator/browser_navigator.h"
 #include "chrome/browser/ui/navigator/browser_navigator_params.h"
+#include "chrome/browser/ui/tabs/tab_enums.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "content/public/browser/browser_task_traits.h"
 
 #include "content/public/browser/browser_thread.h"
+#include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
 #include "url/gurl.h"
 #include "net/http/http_status_code.h"
@@ -875,7 +877,31 @@ void OpenUrlInXplorTab(const std::string& url) {
                      url));
 }
 
-// After a welcome-driven OAuth attempt, bring the auth tab back to the wizard.
+bool IsGrokSignInUrl(const GURL& url, const GURL& welcome) {
+  if (!url.SchemeIsHTTPOrHTTPS())
+    return false;
+  const std::string_view host = url.host();
+  // The consent page is accounts.x.ai, not auth.x.ai. The success screen
+  // ("Connection successful") stays on that host.
+  if (host == "accounts.x.ai" || host == "auth.x.ai")
+    return true;
+  if (base::EndsWith(host, ".x.ai", base::CompareCase::INSENSITIVE_ASCII) &&
+      url.path().find("oauth") != std::string::npos)
+    return true;
+  // CLI loopback callback, not the companion gateway.
+  if ((host == "127.0.0.1" || host == "localhost") &&
+      url.EffectiveIntPort() != welcome.EffectiveIntPort())
+    return true;
+  return false;
+}
+
+bool IsWelcomeTab(const GURL& url, const GURL& welcome) {
+  return url.host() == welcome.host() && url.path() == welcome.path() &&
+         url.EffectiveIntPort() == welcome.EffectiveIntPort();
+}
+
+// Bring the user back to the wizard. Prefer the existing welcome tab so a
+// "Connection successful" page does not strand them.
 void ReturnToOnboardingStep(const std::string& step) {
   content::GetUIThreadTaskRunner({})->PostTask(
       FROM_HERE, base::BindOnce(
@@ -886,46 +912,131 @@ void ReturnToOnboardingStep(const std::string& step) {
                        GURL::Replacements repl;
                        const std::string query = "step=" + step;
                        repl.SetQueryStr(query);
-                       welcome = welcome.ReplaceComponents(repl);
-                       bool navigated = false;
+                       const GURL dest = welcome.ReplaceComponents(repl);
+                       BrowserWindowInterface* target = nullptr;
+                       int welcome_index = -1;
                        ForEachCurrentBrowserWindowInterfaceOrderedByActivation(
                            [&](BrowserWindowInterface* browser) {
-                             if (navigated || !browser)
-                               return false;
-                             TabStripModel* model = browser->GetTabStripModel();
-                             if (!model)
+                             if (!browser || !browser->GetTabStripModel())
                                return true;
+                             TabStripModel* model = browser->GetTabStripModel();
                              for (int i = 0; i < model->count(); ++i) {
                                content::WebContents* contents =
                                    model->GetWebContentsAt(i);
-                               if (!contents)
-                                 continue;
-                               const GURL& url = contents->GetVisibleURL();
-                               const bool auth = url.host() == "auth.x.ai";
-                               // The CLI callback is a loopback port, not the
-                               // companion gateway. Don't steal a welcome tab.
-                               const bool cli_callback =
-                                   url.SchemeIsHTTPOrHTTPS() &&
-                                   (url.host() == "127.0.0.1" ||
-                                    url.host() == "localhost") &&
-                                   url.EffectiveIntPort() !=
-                                       welcome.EffectiveIntPort();
-                               if (!auth && !cli_callback)
-                                 continue;
-                               model->ActivateTabAt(i);
-                               NavigateParams params(
-                                   browser, welcome,
-                                   ui::PAGE_TRANSITION_AUTO_TOPLEVEL);
-                               params.disposition =
-                                   WindowOpenDisposition::CURRENT_TAB;
-                               Navigate(&params);
-                               navigated = true;
-                               return false;
+                               if (contents &&
+                                   IsWelcomeTab(contents->GetVisibleURL(),
+                                                welcome)) {
+                                 target = browser;
+                                 welcome_index = i;
+                                 return false;
+                               }
                              }
                              return true;
                            });
+                       if (!target) {
+                         ForEachCurrentBrowserWindowInterfaceOrderedByActivation(
+                             [&](BrowserWindowInterface* browser) {
+                               if (!browser || !browser->GetTabStripModel())
+                                 return true;
+                               TabStripModel* model =
+                                   browser->GetTabStripModel();
+                               for (int i = 0; i < model->count(); ++i) {
+                                 content::WebContents* contents =
+                                     model->GetWebContentsAt(i);
+                                 if (contents &&
+                                     IsGrokSignInUrl(contents->GetVisibleURL(),
+                                                     welcome)) {
+                                   target = browser;
+                                   welcome_index = i;
+                                   return false;
+                                 }
+                               }
+                               return true;
+                             });
+                       }
+                       if (!target || welcome_index < 0)
+                         return;
+                       TabStripModel* model = target->GetTabStripModel();
+                       model->ActivateTabAt(welcome_index);
+                       NavigateParams params(target, dest,
+                                             ui::PAGE_TRANSITION_AUTO_TOPLEVEL);
+                       params.disposition = WindowOpenDisposition::CURRENT_TAB;
+                       Navigate(&params);
+                       // Close leftover sign-in tabs so the success page is
+                       // not what they land on next.
+                       for (int i = model->count() - 1; i >= 0; --i) {
+                         if (i == model->active_index())
+                           continue;
+                         content::WebContents* contents =
+                             model->GetWebContentsAt(i);
+                         if (contents &&
+                             IsGrokSignInUrl(contents->GetVisibleURL(),
+                                             welcome)) {
+                           model->CloseWebContentsAt(
+                               i, TabCloseTypes::CLOSE_USER_GESTURE);
+                         }
+                       }
                      },
                      step));
+}
+
+void InjectContinueSetupButton(content::WebContents* contents,
+                               const GURL& dest) {
+  if (!contents || !contents->GetPrimaryMainFrame())
+    return;
+  const std::string js = base::StringPrintf(
+      R"JS((() => {
+        if (document.getElementById('xplor-continue-setup')) return;
+        const a = document.createElement('a');
+        a.id = 'xplor-continue-setup';
+        a.href = '%s';
+        a.textContent = 'Continue setup';
+        a.style.cssText = 'position:fixed;z-index:2147483647;right:28px;bottom:28px;background:#f3f3f5;color:#111114;padding:12px 18px;border-radius:999px;font:600 14px -apple-system,sans-serif;text-decoration:none;box-shadow:0 8px 24px rgba(0,0,0,.2)';
+        (document.body || document.documentElement).appendChild(a);
+      })())JS",
+      dest.spec().c_str());
+  contents->GetPrimaryMainFrame()->ExecuteJavaScript(
+      base::UTF8ToUTF16(js), base::NullCallback());
+}
+
+void WatchSignInTabs() {
+  GURL welcome = grok_companion::GetWelcomeURL();
+  if (!welcome.is_valid())
+    return;
+  GURL::Replacements repl;
+  repl.SetQueryStr("step=import");
+  const GURL dest = welcome.ReplaceComponents(repl);
+  bool success = false;
+  ForEachCurrentBrowserWindowInterfaceOrderedByActivation(
+      [&](BrowserWindowInterface* browser) {
+        if (!browser || !browser->GetTabStripModel())
+          return true;
+        TabStripModel* model = browser->GetTabStripModel();
+        for (int i = 0; i < model->count(); ++i) {
+          content::WebContents* contents = model->GetWebContentsAt(i);
+          if (!contents || !IsGrokSignInUrl(contents->GetVisibleURL(), welcome))
+            continue;
+          InjectContinueSetupButton(contents, dest);
+          const std::u16string title = contents->GetTitle();
+          if (title.find(u"Connection successful") != std::u16string::npos ||
+              title.find(u"You can close this window") != std::u16string::npos)
+            success = true;
+        }
+        return true;
+      });
+  bool running = false;
+  {
+    base::AutoLock lock(LoginState().lock);
+    running = LoginState().running;
+  }
+  if (success) {
+    ReturnToOnboardingStep("import");
+    return;
+  }
+  if (running) {
+    content::GetUIThreadTaskRunner({})->PostDelayedTask(
+        FROM_HERE, base::BindOnce(&WatchSignInTabs), base::Milliseconds(500));
+  }
 }
 
 // True when ~/.grok/auth.json looks like a usable OAuth/API session.
@@ -1116,7 +1227,7 @@ void RunGrokLoginOAuthWorker() {
       LoginState().message.clear();
     }
   }
-  if (welcome_flow)
+  if (welcome_flow || ok)
     ReturnToOnboardingStep(ok ? "import" : "account");
 }
 
@@ -1182,6 +1293,8 @@ base::DictValue StartGrokLoginOAuth(bool open_tab) {
     LoginState().message = open_tab ? "Opening browser for sign-in…"
                                     : "Continue sign-in in this tab.";
   }
+  content::GetUIThreadTaskRunner({})->PostTask(
+      FROM_HERE, base::BindOnce(&WatchSignInTabs));
   base::ThreadPool::PostTask(FROM_HERE,
                              {base::MayBlock(), base::TaskPriority::USER_VISIBLE,
                               base::TaskShutdownBehavior::CONTINUE_ON_SHUTDOWN},
