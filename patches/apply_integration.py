@@ -569,6 +569,141 @@ def patch_quiet_tab_type(src: Path):
         print(f"  skip (already applied): {view}")
 
 
+def patch_quiet_sidebar_toolbar(src: Path):
+    """Arc/Dia: no tab-search cluster or hairline above the space header."""
+    top = src / (
+        "chrome/browser/ui/views/tabs/vertical/"
+        "vertical_tab_strip_top_container.cc"
+    )
+    text = top.read_text()
+    if "XPLORER: no sidebar tab-search toolbar" in text:
+        print(f"  skip (already applied): {top}")
+    else:
+        def swap(old: str, new: str, label: str):
+            nonlocal text
+            if old not in text:
+                sys.exit(f"ANCHOR NOT FOUND in {top} ({label})")
+            text = text.replace(old, new, 1)
+
+        swap(
+            "  combo_button_->SetOrientation(\n"
+            "      combo_button_orientation_ = state_controller->IsCollapsed()\n"
+            "                                      ? views::LayoutOrientation::kVertical\n"
+            "                                      : views::LayoutOrientation::kHorizontal);\n"
+            "}\n",
+            "  combo_button_->SetOrientation(\n"
+            "      combo_button_orientation_ = state_controller->IsCollapsed()\n"
+            "                                      ? views::LayoutOrientation::kVertical\n"
+            "                                      : views::LayoutOrientation::kHorizontal);\n"
+            "  // XPLORER: no sidebar tab-search toolbar. Arc's space header is\n"
+            "  // the top of the list; tab search stays on the keyboard.\n"
+            "  combo_button_->SetVisible(false);\n"
+            "  if (combo_button_->start_button()) {\n"
+            "    combo_button_->start_button()->SetVisible(false);\n"
+            "  }\n"
+            "  if (combo_button_->end_button()) {\n"
+            "    combo_button_->end_button()->SetVisible(false);\n"
+            "  }\n"
+            "}\n",
+            "constructor hide",
+        )
+        swap(
+            "void VerticalTabStripTopContainer::Layout(PassKey) {\n"
+            "  LayoutSuperclass<views::View>(this);\n"
+            "  combo_button_->SetOrientation(combo_button_orientation_);\n"
+            "}\n",
+            "void VerticalTabStripTopContainer::Layout(PassKey) {\n"
+            "  // XPLORER: no sidebar tab-search toolbar. The action system\n"
+            "  // turns these buttons back on, so hide them on every layout.\n"
+            "  if (combo_button_) {\n"
+            "    combo_button_->SetVisible(false);\n"
+            "    if (combo_button_->start_button()) {\n"
+            "      combo_button_->start_button()->SetVisible(false);\n"
+            "    }\n"
+            "    if (combo_button_->end_button()) {\n"
+            "      combo_button_->end_button()->SetVisible(false);\n"
+            "    }\n"
+            "  }\n"
+            "  LayoutSuperclass<views::View>(this);\n"
+            "  combo_button_->SetOrientation(combo_button_orientation_);\n"
+            "}\n",
+            "Layout hide",
+        )
+        swap(
+            "      if (start_button_visible || end_button_visible) {\n",
+            "      if (combo_button_->GetVisible() &&\n"
+            "          (start_button_visible || end_button_visible)) {\n",
+            "collapsed layout",
+        )
+        swap(
+            "    if (combo_button_) {\n"
+            "      const gfx::Size pref_size = combo_button_->GetPreferredSizeForOrientation(\n"
+            "          combo_button_orientation_);\n"
+            "      right_alignment -= pref_size.width();\n",
+            "    if (combo_button_ && combo_button_->GetVisible()) {\n"
+            "      const gfx::Size pref_size = combo_button_->GetPreferredSizeForOrientation(\n"
+            "          combo_button_orientation_);\n"
+            "      right_alignment -= pref_size.width();\n",
+            "expanded layout",
+        )
+        swap(
+            "  // Combo Button\n"
+            "  total_width += combo_button_\n"
+            "                     ->GetPreferredSizeForOrientation(\n"
+            "                         views::LayoutOrientation::kHorizontal)\n"
+            "                     .width();\n",
+            "  // Combo Button\n"
+            "  // XPLORER: a hidden tab-search cluster must not widen the row.\n"
+            "  if (combo_button_->GetVisible()) {\n"
+            "    total_width += combo_button_\n"
+            "                       ->GetPreferredSizeForOrientation(\n"
+            "                           views::LayoutOrientation::kHorizontal)\n"
+            "                       .width();\n"
+            "  }\n",
+            "preferred width",
+        )
+        swap(
+            "  if (combo_button_) {\n"
+            "    min_height =\n"
+            "        std::max(min_height, combo_button_\n"
+            "                                 ->GetPreferredSizeForOrientation(\n"
+            "                                     views::LayoutOrientation::kHorizontal)\n"
+            "                                 .height());\n"
+            "  }\n",
+            "  if (combo_button_ && combo_button_->GetVisible()) {\n"
+            "    min_height =\n"
+            "        std::max(min_height, combo_button_\n"
+            "                                 ->GetPreferredSizeForOrientation(\n"
+            "                                     views::LayoutOrientation::kHorizontal)\n"
+            "                                 .height());\n"
+            "  }\n",
+            "baseline height",
+        )
+        top.write_text(text)
+        print(f"  edited: {top}")
+
+    region = src / "chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc"
+    rtext = region.read_text()
+    if "XPLORER: no sidebar toolbar rule" in rtext:
+        print(f"  skip (already applied): {region}")
+        return
+    old = (
+        "  top_button_separator_->SetProperty(\n"
+        "      views::kMarginsKey, gfx::Insets::VH(0, region_horizontal_padding));\n"
+    )
+    new = (
+        "  top_button_separator_->SetProperty(\n"
+        "      views::kMarginsKey, gfx::Insets::VH(0, region_horizontal_padding));\n"
+        "  // XPLORER: no sidebar toolbar rule. The hairline under tab search\n"
+        "  // made the space header look like a Chrome toolbar section.\n"
+        "  top_button_separator_->SetVisible(false);\n"
+    )
+    if old not in rtext:
+        sys.exit(f"ANCHOR NOT FOUND in {region} (toolbar rule)")
+    region.write_text(rtext.replace(old, new, 1))
+    print(f"  edited: {region}")
+
+
 def patch_vertical_sidebar(src: Path):
     """Arc-style sidebar chrome in the vertical tab strip.
 
@@ -2818,6 +2953,7 @@ def main(src: Path):
     patch_quiet_new_tab_row(src)
     patch_hover_close(src)
     patch_quiet_tab_type(src)
+    patch_quiet_sidebar_toolbar(src)
 
     patch_xplorer_settings_access(src)
 
