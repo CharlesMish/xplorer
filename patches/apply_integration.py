@@ -569,6 +569,111 @@ def patch_quiet_tab_type(src: Path):
         print(f"  skip (already applied): {view}")
 
 
+def patch_floating_address_pill(src: Path):
+    """Dia: a short capsule in the toolbar, not a Chrome bar across the window."""
+    toolbar = src / "chrome/browser/ui/views/toolbar/toolbar_view.cc"
+    text = toolbar.read_text()
+    if "XPLORER: floating address pill" in text:
+        print(f"  skip (already applied): {toolbar}")
+    else:
+        old = (
+            "  if (location_bar_view_) {\n"
+            "    location_bar_view_->SetProperty(views::kFlexBehaviorKey,\n"
+            "                                    location_bar_flex_rule);\n"
+            "    int omnibox_side = location_bar_margin;\n"
+            "    if (const auto* vts =\n"
+            "            tabs::VerticalTabStripStateController::From(browser_);\n"
+            "        vts && vts->ShouldDisplayVerticalTabs()) {\n"
+            "      // XPLORER: quiet toolbar scale. Pull the pill off the nav buttons.\n"
+            "      omnibox_side = 16;\n"
+            "    }\n"
+            "    location_bar_view_->SetProperty(views::kMarginsKey,\n"
+            "                                    gfx::Insets::VH(0, omnibox_side));\n"
+            "  }\n"
+        )
+        new = (
+            "  if (location_bar_view_) {\n"
+            "    int omnibox_side = location_bar_margin;\n"
+            "    views::FlexSpecification omnibox_flex = location_bar_flex_rule;\n"
+            "    if (const auto* vts =\n"
+            "            tabs::VerticalTabStripStateController::From(browser_);\n"
+            "        vts && vts->ShouldDisplayVerticalTabs()) {\n"
+            "      // XPLORER: floating address pill. A short capsule in the\n"
+            "      // middle of the plane, not a bar that spans the window.\n"
+            "      omnibox_side = 12;\n"
+            "      constexpr int kPillWidth = 520;\n"
+            "      const int pill_height =\n"
+            "          GetLayoutConstant(LayoutConstant::kLocationBarHeight);\n"
+            "      location_bar_view_->SetPreferredSize(\n"
+            "          gfx::Size(kPillWidth, pill_height));\n"
+            "      omnibox_flex = location_bar_flex_rule.WithAlignment(\n"
+            "          views::LayoutAlignment::kCenter);\n"
+            "    }\n"
+            "    location_bar_view_->SetProperty(views::kFlexBehaviorKey,\n"
+            "                                    omnibox_flex);\n"
+            "    location_bar_view_->SetProperty(views::kMarginsKey,\n"
+            "                                    gfx::Insets::VH(0, omnibox_side));\n"
+            "  }\n"
+        )
+        if old not in text:
+            sys.exit(f"ANCHOR NOT FOUND in {toolbar} (floating pill)")
+        toolbar.write_text(text.replace(old, new, 1))
+        print(f"  edited: {toolbar}")
+
+    bar = src / "chrome/browser/ui/views/location_bar/location_bar_view.cc"
+    btext = bar.read_text()
+    if "XPLORER: floating address pill" in btext:
+        print(f"  skip (already applied): {bar}")
+        return
+    old_inc = (
+        '#include "chrome/browser/ui/tabs/vertical_tab_strip_state_controller.h"'
+        "  // XPLORER\n"
+    )
+    new_inc = (
+        '#include "chrome/browser/ui/tabs/vertical_tab_strip_state_controller.h"'
+        "  // XPLORER\n"
+        '#include "ui/gfx/color_utils.h"  // XPLORER\n'
+    )
+    if old_inc not in btext:
+        sys.exit(f"ANCHOR NOT FOUND in {bar} (include)")
+    btext = btext.replace(old_inc, new_inc, 1)
+    old = (
+        "    background_color_ = gfx::Tween::ColorValueBetween(opacity, normal, hovered);\n"
+        "  }\n"
+        "\n"
+        "  SkColor border_color = SK_ColorTRANSPARENT;\n"
+    )
+    new = (
+        "    background_color_ = gfx::Tween::ColorValueBetween(opacity, normal, hovered);\n"
+        "  }\n"
+        "\n"
+        "  // XPLORER: floating address pill. The capsule needs its own fill\n"
+        "  // or it disappears into the sidebar plane. Focus still matches\n"
+        "  // the popup.\n"
+        "  if (!is_caret_visible && !high_contrast && !input_in_progress) {\n"
+        "    const auto* vts =\n"
+        "        browser_\n"
+        "            ? tabs::VerticalTabStripStateController::From(browser_.get())\n"
+        "            : nullptr;\n"
+        "    if (vts && vts->ShouldDisplayVerticalTabs()) {\n"
+        "      const SkColor plane = color_provider->GetColor(ui::kColorSysSurface3);\n"
+        "      const bool dark = color_utils::GetRelativeLuminance(plane) < 0.4f;\n"
+        "      const float rest = dark ? 0.10f : 0.90f;\n"
+        "      const float hover = dark ? 0.16f : 0.97f;\n"
+        "      background_color_ = color_utils::AlphaBlend(\n"
+        "          SK_ColorWHITE, plane,\n"
+        "          rest + (hover - rest) * static_cast<float>(opacity));\n"
+        "    }\n"
+        "  }\n"
+        "\n"
+        "  SkColor border_color = SK_ColorTRANSPARENT;\n"
+    )
+    if old not in btext:
+        sys.exit(f"ANCHOR NOT FOUND in {bar} (pill fill)")
+    bar.write_text(btext.replace(old, new, 1))
+    print(f"  edited: {bar}")
+
+
 def patch_quiet_bookmark_star(src: Path):
     """Arc/Dia: the empty bookmark star is not drawn in the address pill."""
     path = src / (
@@ -3616,6 +3721,7 @@ def main(src: Path):
     patch_toolbar_plane(src)
     patch_page_card(src)
     patch_quiet_toolbar_scale(src)
+    patch_floating_address_pill(src)
     patch_hide_idle_reload(src)
     patch_quiet_omnibox_icon(src)
     patch_quiet_bookmark_star(src)
