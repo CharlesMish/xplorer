@@ -80,6 +80,9 @@
 #include "net/traffic_annotation/network_traffic_annotation_test_helper.h"
 
 namespace agent_gateway {
+
+std::string LoadGrokAccountLabel();
+
 namespace {
 
 constexpr char kGrokBin[] = "grok";
@@ -880,8 +883,6 @@ bool GrokAuthFileLooksValid() {
          contents.find("api_key") != std::string::npos ||
          contents.find("XAI_API_KEY") != std::string::npos;
 }
-
-std::string LoadGrokAccountLabel();
 
 base::DictValue GrokLoginStatusDict() {
   GrokLoginState& s = LoginState();
