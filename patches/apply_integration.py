@@ -294,6 +294,170 @@ def patch_soft_tab_pills(src: Path):
     print(f"  edited: {path}")
 
 
+def patch_quiet_new_tab_row(src: Path):
+    """Arc/Dia: the vertical new-tab control is a quiet labeled row, not a chip."""
+    header = src / "chrome/browser/ui/views/tabs/shared/new_tab_button.h"
+    htext = header.read_text()
+    if "SetArcQuietRow" not in htext:
+        old = (
+            "  // views::View:\n"
+            "  void OnMouseEvent(ui::MouseEvent* event) override;\n"
+            "\n"
+            " private:\n"
+            "  std::unique_ptr<views::ActionViewController> action_view_controller_;\n"
+            "\n"
+            "  raw_ptr<BrowserWindowInterface> browser_;\n"
+        )
+        new = (
+            "  // views::View:\n"
+            "  void OnMouseEvent(ui::MouseEvent* event) override;\n"
+            "  void OnPaintBackground(gfx::Canvas* canvas) override;\n"
+            "\n"
+            "  // XPLORER: Arc quiet new-tab row. Rest is clear; hover is a wash.\n"
+            "  void SetArcQuietRow(bool quiet);\n"
+            "\n"
+            " private:\n"
+            "  std::unique_ptr<views::ActionViewController> action_view_controller_;\n"
+            "\n"
+            "  raw_ptr<BrowserWindowInterface> browser_;\n"
+            "  bool arc_quiet_row_ = false;  // XPLORER\n"
+        )
+        if old not in htext:
+            sys.exit(f"ANCHOR NOT FOUND in {header} (NewTabButton quiet row)")
+        header.write_text(htext.replace(old, new, 1))
+        print(f"  edited: {header}")
+    else:
+        print(f"  skip (already applied): {header}")
+
+    cc = src / "chrome/browser/ui/views/tabs/shared/new_tab_button.cc"
+    text = cc.read_text()
+    if "XPLORER: Arc quiet new-tab row" not in text:
+        old_inc = '#include "ui/views/view_class_properties.h"\n'
+        new_inc = (
+            '#include "ui/views/view_class_properties.h"\n'
+            '#include "cc/paint/paint_flags.h"  // XPLORER\n'
+            '#include "chrome/browser/ui/color/chrome_color_id.h"  // XPLORER\n'
+            '#include "third_party/skia/include/core/SkColor.h"  // XPLORER\n'
+            '#include "ui/color/color_provider.h"  // XPLORER\n'
+            '#include "ui/gfx/canvas.h"  // XPLORER\n'
+            '#include "ui/gfx/color_utils.h"  // XPLORER\n'
+            '#include "ui/gfx/geometry/rect_f.h"  // XPLORER\n'
+            '#include "ui/views/widget/widget.h"  // XPLORER\n'
+        )
+        if old_inc not in text:
+            sys.exit(f"ANCHOR NOT FOUND in {cc} (includes)")
+        text = text.replace(old_inc, new_inc, 1)
+        old_tail = (
+            "  TabStripFlatEdgeButton::OnMouseEvent(event);\n"
+            "}\n"
+            "\n"
+            "BEGIN_METADATA(NewTabButton)\n"
+        )
+        new_tail = (
+            "  TabStripFlatEdgeButton::OnMouseEvent(event);\n"
+            "}\n"
+            "\n"
+            "void NewTabButton::SetArcQuietRow(bool quiet) {\n"
+            "  if (arc_quiet_row_ == quiet) {\n"
+            "    return;\n"
+            "  }\n"
+            "  arc_quiet_row_ = quiet;\n"
+            "  SchedulePaint();\n"
+            "}\n"
+            "\n"
+            "void NewTabButton::OnPaintBackground(gfx::Canvas* canvas) {\n"
+            "  if (!arc_quiet_row_) {\n"
+            "    TabStripFlatEdgeButton::OnPaintBackground(canvas);\n"
+            "    return;\n"
+            "  }\n"
+            "  // XPLORER: Arc quiet new-tab row. A filled Chrome chip fights the\n"
+            "  // sidebar. Rest stays clear; hover and press are a soft ink wash.\n"
+            "  const views::Button::ButtonState state = GetState();\n"
+            "  if (state != views::Button::STATE_HOVERED &&\n"
+            "      state != views::Button::STATE_PRESSED) {\n"
+            "    return;\n"
+            "  }\n"
+            "  const ui::ColorProvider* colors = GetColorProvider();\n"
+            "  if (!colors) {\n"
+            "    return;\n"
+            "  }\n"
+            "  const bool frame_active =\n"
+            "      GetWidget() && GetWidget()->ShouldPaintAsActive();\n"
+            "  const SkColor sidebar = colors->GetColor(\n"
+            "      frame_active ? kColorTabBackgroundInactiveFrameActive\n"
+            "                   : kColorTabBackgroundInactiveFrameInactive);\n"
+            "  const bool dark = color_utils::GetRelativeLuminance(sidebar) < 0.4f;\n"
+            "  const SkColor ink = dark ? SK_ColorWHITE : SK_ColorBLACK;\n"
+            "  const float alpha = state == views::Button::STATE_PRESSED\n"
+            "                          ? (dark ? 0.16f : 0.10f)\n"
+            "                          : (dark ? 0.10f : 0.06f);\n"
+            "  cc::PaintFlags flags;\n"
+            "  flags.setAntiAlias(true);\n"
+            "  flags.setStyle(cc::PaintFlags::kFill_Style);\n"
+            "  flags.setColor(color_utils::AlphaBlend(ink, sidebar, alpha));\n"
+            "  canvas->DrawRoundRect(gfx::RectF(GetLocalBounds()), 10.f, flags);\n"
+            "}\n"
+            "\n"
+            "BEGIN_METADATA(NewTabButton)\n"
+        )
+        if old_tail not in text:
+            sys.exit(f"ANCHOR NOT FOUND in {cc} (OnMouseEvent tail)")
+        text = text.replace(old_tail, new_tail, 1)
+        cc.write_text(text)
+        print(f"  edited: {cc}")
+    else:
+        print(f"  skip (already applied): {cc}")
+
+    bottom = src / (
+        "chrome/browser/ui/views/tabs/vertical/"
+        "vertical_tab_strip_bottom_container.cc"
+    )
+    btext = bottom.read_text()
+    if "XPLORER: Arc quiet new-tab row" not in btext:
+        old_add = (
+            "  new_tab_button_ = AddChildView(std::move(new_tab_button));\n"
+        )
+        new_add = (
+            "  new_tab_button_ = AddChildView(std::move(new_tab_button));\n"
+            "  // XPLORER: Arc quiet new-tab row — clear fill, not a Chrome chip.\n"
+            "  static_cast<shared::NewTabButton*>(new_tab_button_.get())\n"
+            "      ->SetArcQuietRow(true);\n"
+        )
+        if old_add not in btext:
+            sys.exit(f"ANCHOR NOT FOUND in {bottom} (AddChildView)")
+        btext = btext.replace(old_add, new_add, 1)
+        old_insets = (
+            "  new_tab_button_->SetInsets(GetLayoutInsets(\n"
+            "      collapsed ? LayoutInset::VERTICAL_TAB_STRIP_BOTTOM_BUTTON_COLLAPSED\n"
+            "                : LayoutInset::VERTICAL_TAB_STRIP_BOTTOM_BUTTON_UNCOLLAPSED));\n"
+            "}\n"
+        )
+        new_insets = (
+            "  new_tab_button_->SetInsets(GetLayoutInsets(\n"
+            "      collapsed ? LayoutInset::VERTICAL_TAB_STRIP_BOTTOM_BUTTON_COLLAPSED\n"
+            "                : LayoutInset::VERTICAL_TAB_STRIP_BOTTOM_BUTTON_UNCOLLAPSED));\n"
+            "  // XPLORER: Arc quiet new-tab row. Expanded sidebar reads \"New tab\".\n"
+            "  // SetLabelText no-ops when the action already stored the string, so\n"
+            "  // clear it first to force the visible-text update.\n"
+            "  new_tab_button_->SetShouldShowLabel(!collapsed);\n"
+            "  if (collapsed) {\n"
+            "    new_tab_button_->SetText(std::u16string());\n"
+            "    new_tab_button_->SetHorizontalAlignment(gfx::ALIGN_CENTER);\n"
+            "  } else {\n"
+            "    new_tab_button_->SetLabelText(std::u16string());\n"
+            "    new_tab_button_->SetLabelText(u\"New tab\");\n"
+            "  }\n"
+            "}\n"
+        )
+        if old_insets not in btext:
+            sys.exit(f"ANCHOR NOT FOUND in {bottom} (SetInsets)")
+        btext = btext.replace(old_insets, new_insets, 1)
+        bottom.write_text(btext)
+        print(f"  edited: {bottom}")
+    else:
+        print(f"  skip (already applied): {bottom}")
+
+
 def patch_vertical_sidebar(src: Path):
     """Arc-style sidebar chrome in the vertical tab strip.
 
@@ -2495,6 +2659,7 @@ def main(src: Path):
     # Arc-style vertical sidebar: "Tabs" section label + agent tab group.
     patch_vertical_sidebar(src)
     patch_soft_tab_pills(src)
+    patch_quiet_new_tab_row(src)
 
     patch_xplorer_settings_access(src)
 
