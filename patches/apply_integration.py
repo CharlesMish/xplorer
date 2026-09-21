@@ -1567,6 +1567,175 @@ def patch_quiet_sidebar_toolbar(src: Path):
     print(f"  edited: {region}")
 
 
+def patch_collapse_sidebar(src: Path):
+    """Collapsed sidebar is zero width so only the page shows. Hovering the
+    window's left edge reveals it. Traffic lights hide while collapsed.
+    """
+    frame = src / "chrome/browser/ui/views/frame/browser_frame_view_mac.mm"
+    if "XplorerSetCaptionButtonsVisible" not in frame.read_text():
+        edit(
+            frame,
+            '#include "ui/views/widget/widget.h"\n\nnamespace {',
+            '#include "ui/views/widget/widget.h"\n\n'
+            "#import <AppKit/AppKit.h>\n\n"
+            "void XplorerSetCaptionButtonsVisible(gfx::NativeWindow window, "
+            "bool visible) {\n"
+            "  NSWindow* ns_window = window.GetNativeNSWindow();\n"
+            "  if (!ns_window)\n"
+            "    return;\n"
+            "  const NSWindowButton buttons[] = {\n"
+            "      NSWindowCloseButton, NSWindowMiniaturizeButton, "
+            "NSWindowZoomButton};\n"
+            "  for (NSWindowButton button_id : buttons) {\n"
+            "    if (NSButton* button = [ns_window standardWindowButton:button_id])\n"
+            "      button.hidden = !visible;\n"
+            "  }\n"
+            "}\n\n"
+            "namespace {",
+        )
+
+    vts_h = src / "chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h"
+    htext = vts_h.read_text()
+    if "kCollapsedWidth = 0" not in htext:
+        edit(
+            vts_h,
+            "  static constexpr int kCollapsedWidth = 56;\n"
+            "  // TODO(crbug.com/465833741): Determine snapping behavior.",
+            "  // XPLORER: collapsed sidebar is the page only. Hover the left "
+            "edge to show it.\n"
+            "  static constexpr int kCollapsedWidth = 0;\n"
+            "  // TODO(crbug.com/465833741): Determine snapping behavior.",
+        )
+    if "class EdgeHoverHandler" not in vts_h.read_text():
+        edit(
+            vts_h,
+            "  class ClickEventHandler : public ui::EventHandler {",
+            "  // XPLORER: a collapsed strip has no width, so hover the window's "
+            "left edge.\n"
+            "  class EdgeHoverHandler : public ui::EventHandler {\n"
+            "   public:\n"
+            "    explicit EdgeHoverHandler(VerticalTabStripRegionView* region_view)\n"
+            "        : region_view_(region_view) {}\n"
+            "    void OnMouseEvent(ui::MouseEvent* event) override;\n"
+            "\n"
+            "   private:\n"
+            "    raw_ptr<VerticalTabStripRegionView> region_view_;\n"
+            "  };\n"
+            "\n",
+            before=True,
+        )
+    if "edge_hover_handler_" not in vts_h.read_text():
+        edit(
+            vts_h,
+            "  ClickEventHandler click_handler_{this};",
+            "  EdgeHoverHandler edge_hover_handler_{this};\n",
+            before=True,
+        )
+
+    vts_cc = src / "chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc"
+    if "XplorerSetCaptionButtonsVisible" not in vts_cc.read_text():
+        edit(
+            vts_cc,
+            '#include "ui/display/screen.h"\n#include "ui/events/event.h"',
+            '#include "ui/display/screen.h"\n'
+            '#include "ui/gfx/native_ui_types.h"\n'
+            "\n"
+            "#if BUILDFLAG(IS_MAC)\n"
+            "// Defined in browser_frame_view_mac.mm. Hides the traffic lights when the\n"
+            "// sidebar is collapsed so only the page remains.\n"
+            "extern void XplorerSetCaptionButtonsVisible(gfx::NativeWindow window,\n"
+            "                                            bool visible);\n"
+            "#endif\n"
+            '#include "ui/events/event.h"',
+        )
+        edit(
+            vts_cc,
+            "void VerticalTabStripRegionView::AddedToWidget() {",
+            "void VerticalTabStripRegionView::EdgeHoverHandler::OnMouseEvent(\n"
+            "    ui::MouseEvent* event) {\n"
+            "  if (!region_view_ || !region_view_->state_controller_ ||\n"
+            "      !region_view_->state_controller_->IsCollapsed())\n"
+            "    return;\n"
+            "  if (event->type() != ui::EventType::kMouseMoved &&\n"
+            "      event->type() != ui::EventType::kMouseEntered)\n"
+            "    return;\n"
+            "  views::Widget* widget = region_view_->GetWidget();\n"
+            "  if (!widget)\n"
+            "    return;\n"
+            "  const gfx::Point cursor = display::Screen::Get()->GetCursorScreenPoint();\n"
+            "  const gfx::Rect window = widget->GetWindowBoundsInScreen();\n"
+            "  if (cursor.x() >= window.x() && cursor.x() <= window.x() + 14 &&\n"
+            "      cursor.y() >= window.y() && cursor.y() <= window.bottom()) {\n"
+            "    region_view_->UpdateExpandOnHoverState(true);\n"
+            "  }\n"
+            "}\n"
+            "\n"
+            "void VerticalTabStripRegionView::AddedToWidget() {",
+            before=True,
+        )
+        edit(
+            vts_cc,
+            "void VerticalTabStripRegionView::AddedToWidget() {\n"
+            "  BaseTabStripRegionView::AddedToWidget();\n"
+            "  paint_as_active_subscription_ =",
+            "void VerticalTabStripRegionView::AddedToWidget() {\n"
+            "  BaseTabStripRegionView::AddedToWidget();\n"
+            "  if (views::View* root = GetWidget()->GetRootView())\n"
+            "    root->AddPreTargetHandler(&edge_hover_handler_);\n"
+            "  paint_as_active_subscription_ =",
+        )
+        edit(
+            vts_cc,
+            "void VerticalTabStripRegionView::RemovedFromWidget() {\n"
+            "  if (GetFocusManager()) {",
+            "void VerticalTabStripRegionView::RemovedFromWidget() {\n"
+            "  if (GetWidget()) {\n"
+            "    if (views::View* root = GetWidget()->GetRootView())\n"
+            "      root->RemovePreTargetHandler(&edge_hover_handler_);\n"
+            "  }\n"
+            "  if (GetFocusManager()) {",
+        )
+        edit(
+            vts_cc,
+            "  if (state == tabs::VerticalTabStripCollapseState::kExpanded ||\n"
+            "      state == tabs::VerticalTabStripCollapseState::kCollapsed) {\n"
+            "    UpdateExpandOnHoverState();\n"
+            "  }\n"
+            "}",
+            "  if (state == tabs::VerticalTabStripCollapseState::kExpanded ||\n"
+            "      state == tabs::VerticalTabStripCollapseState::kCollapsed) {\n"
+            "    UpdateExpandOnHoverState();\n"
+            "  }\n"
+            "#if BUILDFLAG(IS_MAC)\n"
+            "  if (GetWidget()) {\n"
+            "    XplorerSetCaptionButtonsVisible(GetWidget()->GetNativeWindow(),\n"
+            "                                    !collapsed || is_expanded_on_hover_);\n"
+            "  }\n"
+            "#endif\n"
+            "}",
+        )
+        edit(
+            vts_cc,
+            "  BrowserAnimationController::From(browser_view()->browser())\n"
+            "      ->Start(TabStripAnimations::kVerticalTabStrip,\n"
+            "              expand ? TabStripAnimations::kExpandOnHover\n"
+            "                     : TabStripAnimations::kCollapseOnHover);\n"
+            "}",
+            "  BrowserAnimationController::From(browser_view()->browser())\n"
+            "      ->Start(TabStripAnimations::kVerticalTabStrip,\n"
+            "              expand ? TabStripAnimations::kExpandOnHover\n"
+            "                     : TabStripAnimations::kCollapseOnHover);\n"
+            "#if BUILDFLAG(IS_MAC)\n"
+            "  if (GetWidget()) {\n"
+            "    XplorerSetCaptionButtonsVisible(\n"
+            "        GetWidget()->GetNativeWindow(),\n"
+            "        expand || !state_controller_->IsCollapsed());\n"
+            "  }\n"
+            "#endif\n"
+            "}",
+        )
+
+
 def patch_vertical_sidebar(src: Path):
     """Arc-style sidebar chrome in the vertical tab strip.
 
@@ -3811,6 +3980,7 @@ def main(src: Path):
 
     # Arc-style vertical sidebar: "Tabs" section label + agent tab group.
     patch_vertical_sidebar(src)
+    patch_collapse_sidebar(src)
     patch_soft_tab_pills(src)
     patch_sidebar_plane(src)
     patch_hide_top_toolbar(src)
