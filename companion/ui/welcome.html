@@ -25,10 +25,12 @@
           <p>Chat, search, and the sidebar all use the same account. Sign-in stays in this window.</p>
         </div>
         <div class="split-panel">
-          <h2>Continue with Grok</h2>
+          <h2 id="account-heading">Continue with Grok</h2>
           <p class="panel-note" id="account-note">One step. It opens here, not in another browser.</p>
+          <p class="signed-in" id="account-signed-in" hidden></p>
           <p class="error" id="account-error" hidden></p>
           <button type="button" class="primary" id="sign-in">Continue with Grok</button>
+          <button type="button" class="primary hidden" id="account-continue">Continue</button>
           <button type="button" class="ghost" id="skip-sign-in">Skip for now</button>
         </div>
       </div>

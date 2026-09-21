@@ -1086,8 +1086,11 @@ void WatchSignInTabs() {
     base::AutoLock lock(LoginState().lock);
     running = LoginState().running;
   }
-  if (success) {
-    ReturnToOnboardingStep("import");
+  // Don't navigate away on the success title alone. That cancels the
+  // loopback callback before the token is written, and the welcome screen
+  // comes back still signed out.
+  if (success && !LoadGrokOAuthAccessToken().empty()) {
+    ReturnToOnboardingStep("account");
     return;
   }
   if (running) {
@@ -1289,7 +1292,7 @@ void RunGrokLoginOAuthWorker() {
   // A saved token is success even if the CLI's exit code is odd because
   // Chrome also opened the link. Don't send the user back to sign-in.
   if (welcome_flow || saved)
-    ReturnToOnboardingStep(saved ? "import" : "account");
+    ReturnToOnboardingStep("account");
 }
 
 // Remove the signed-in OAuth account from ~/.grok/auth.json. Leaves any

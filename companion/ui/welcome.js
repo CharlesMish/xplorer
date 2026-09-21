@@ -47,6 +47,7 @@ function show(step) {
   document.querySelectorAll('.step').forEach((el) => {
     el.classList.toggle('hidden', el.dataset.step !== step);
   });
+  if (step === 'account') refreshAccount();
   if (step === 'import') loadBrowsers();
   if (step === 'default') prepareDefault();
 }
@@ -66,6 +67,38 @@ function syncImportAction() {
     : 'Import';
 }
 
+async function refreshAccount() {
+  let status = {};
+  try {
+    status = await (await fetch('/api/grok/login', { cache: 'no-store' })).json();
+  } catch {
+    return;
+  }
+  const signedIn = status.logged_in === true || status.has_token === true;
+  const heading = document.getElementById('account-heading');
+  const note = document.getElementById('account-note');
+  const signed = document.getElementById('account-signed-in');
+  const signIn = document.getElementById('sign-in');
+  const cont = document.getElementById('account-continue');
+  const title = document.querySelector('[data-step="account"] h1');
+  if (!signedIn) {
+    if (status.error) setError('account-error', status.error);
+    return;
+  }
+  if (title) title.textContent = 'You’re signed in.';
+  if (heading) heading.textContent = 'Grok is connected';
+  if (note) note.textContent = 'This account is used for chat and search.';
+  if (signed) {
+    signed.hidden = false;
+    signed.textContent = status.account
+      ? `Signed in as ${status.account}`
+      : 'Signed in to Grok.';
+  }
+  if (signIn) signIn.classList.add('hidden');
+  if (cont) cont.classList.remove('hidden');
+  setError('account-error', '');
+}
+
 async function startGrokLogin() {
   const button = document.getElementById('sign-in');
   setError('account-error', '');
@@ -81,7 +114,7 @@ async function startGrokLogin() {
     });
     const first = await start.json();
     if (first.logged_in || first.has_token) {
-      show('import');
+      show('account');
       return;
     }
     // grok login can take up to a minute to print the auth URL.
@@ -89,7 +122,7 @@ async function startGrokLogin() {
       const poll = await fetch('/api/grok/login', { cache: 'no-store' });
       const status = await poll.json();
       if (status.logged_in || status.has_token) {
-        show('import');
+        show('account');
         return;
       }
       if (status.url) {
@@ -332,6 +365,7 @@ document.addEventListener('keydown', (event) => {
 });
 document.getElementById('sign-in')?.addEventListener('click', startGrokLogin);
 document.getElementById('skip-sign-in')?.addEventListener('click', () => show('import'));
+document.getElementById('account-continue')?.addEventListener('click', () => show('import'));
 document.getElementById('do-import')?.addEventListener('click', runImport);
 document.getElementById('skip-import')?.addEventListener('click', () => show('favorites'));
 document.getElementById('recheck-import')?.addEventListener('click', () => loadBrowsers());

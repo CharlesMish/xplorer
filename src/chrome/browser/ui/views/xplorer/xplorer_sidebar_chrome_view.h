@@ -84,9 +84,8 @@ class XplorerSidebarChromeView : public views::View,
   raw_ptr<views::ImageButton> forward_button_ = nullptr;
   raw_ptr<views::ImageButton> reload_button_ = nullptr;
   raw_ptr<views::Textfield> url_field_ = nullptr;
-  raw_ptr<views::Textfield> popup_field_ = nullptr;
-  raw_ptr<views::Widget> url_popup_ = nullptr;
   GURL full_url_;
+  bool editing_url_ = false;
   bool showing_stop_ = false;
   bool observing_tabs_ = false;
 

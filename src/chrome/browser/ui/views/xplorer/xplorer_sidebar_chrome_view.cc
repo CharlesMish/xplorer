@@ -278,7 +278,7 @@ void XplorerSidebarChromeView::FocusUrlField(bool user_initiated) {
 }
 
 void XplorerSidebarChromeView::OnUrlFieldBlur() {
-  UpdateUrlField();
+  CloseUrlPopup();
 }
 
 bool XplorerSidebarChromeView::HandleKeyEvent(
@@ -286,14 +286,14 @@ bool XplorerSidebarChromeView::HandleKeyEvent(
     const ui::KeyEvent& key_event) {
   if (key_event.type() != ui::EventType::kKeyPressed)
     return false;
-  if (sender != url_field_ && sender != popup_field_)
+  if (sender != url_field_)
     return false;
   if (key_event.key_code() == ui::VKEY_RETURN) {
-    if (sender == popup_field_ && popup_field_)
-      NavigateFromText(std::u16string(popup_field_->GetText()));
-    else
-      NavigateFromField();
-    CloseUrlPopup();
+    editing_url_ = false;
+    if (url_field_)
+      url_field_->SetReadOnly(true);
+    NavigateFromText(std::u16string(url_field_->GetText()));
+    UpdateUrlField();
     return true;
   }
   if (key_event.key_code() == ui::VKEY_ESCAPE) {
@@ -352,67 +352,27 @@ bool XplorerSidebarChromeView::HandleMouseEvent(
 }
 
 void XplorerSidebarChromeView::CloseUrlPopup() {
-  popup_field_ = nullptr;
-  if (views::Widget* popup = url_popup_) {
-    url_popup_ = nullptr;
-    popup->RemoveObserver(this);
-    popup->Close();
-  }
+  // Editing happens in the sidebar field. There is no floating popup; one
+  // was sticking open on top of the space name.
+  editing_url_ = false;
+  if (url_field_)
+    url_field_->SetReadOnly(true);
+  UpdateUrlField();
 }
 
 void XplorerSidebarChromeView::OnWidgetActivationChanged(views::Widget* widget,
-                                                         bool active) {
-  if (widget == url_popup_ && !active)
-    CloseUrlPopup();
-}
+                                                         bool active) {}
 
-void XplorerSidebarChromeView::OnWidgetDestroying(views::Widget* widget) {
-  if (widget == url_popup_) {
-    url_popup_ = nullptr;
-    popup_field_ = nullptr;
-  }
-}
+void XplorerSidebarChromeView::OnWidgetDestroying(views::Widget* widget) {}
 
 void XplorerSidebarChromeView::ShowUrlPopup() {
-  if (!url_field_ || !url_field_->GetWidget())
+  if (!url_field_)
     return;
-  CloseUrlPopup();
-  auto* widget = new views::Widget();
-  views::Widget::InitParams params(
-      views::Widget::InitParams::NATIVE_WIDGET_OWNS_WIDGET,
-      views::Widget::InitParams::TYPE_POPUP);
-  params.opacity = views::Widget::InitParams::WindowOpacity::kTranslucent;
-  params.shadow_type = views::Widget::InitParams::ShadowType::kDrop;
-  params.parent = url_field_->GetWidget()->GetNativeView();
-  const gfx::Rect anchor = url_field_->GetBoundsInScreen();
-  params.bounds = gfx::Rect(anchor.x(), anchor.bottom() + 4, anchor.width(), 40);
-  widget->Init(std::move(params));
-  widget->AddObserver(this);
-
-  SkColor bg = SkColorSetRGB(0xF3, 0xF4, 0xF6);
-  if (const auto* colors = url_field_->GetColorProvider())
-    bg = colors->GetColor(ui::kColorSysHeader);
-  auto contents = std::make_unique<views::View>();
-  contents->SetBackground(views::CreateRoundedRectBackground(bg, 10.f));
-  auto* layout = contents->SetLayoutManager(std::make_unique<views::BoxLayout>(
-      views::BoxLayout::Orientation::kHorizontal, gfx::Insets::VH(8, 12)));
-  auto* field = contents->AddChildView(std::make_unique<views::Textfield>());
-  popup_field_ = field;
-  field->SetController(this);
-  field->SetBorder(views::CreateEmptyBorder(gfx::Insets()));
-  field->SetBackgroundColor(bg);
-  field->SetTextColorId(ui::kColorSysOnSurface);
-  field->SetPlaceholderText(u"Search or Enter URL");
-  field->SetAccessibleName(u"Search or Enter URL");
-  field->SetText(EditableUrl(full_url_));
-  layout->SetFlexForView(field, 1);
-  widget->SetContentsView(std::move(contents));
-  widget->Show();
-  url_popup_ = widget;
-  if (popup_field_) {
-    popup_field_->RequestFocus();
-    popup_field_->SelectAll(false);
-  }
+  editing_url_ = true;
+  url_field_->SetReadOnly(false);
+  url_field_->SetText(EditableUrl(full_url_));
+  url_field_->RequestFocus();
+  url_field_->SelectAll(false);
 }
 
 void XplorerSidebarChromeView::NavigateFromField() {
@@ -442,7 +402,7 @@ void XplorerSidebarChromeView::NavigateFromText(const std::u16string& text) {
 }
 
 void XplorerSidebarChromeView::UpdateUrlField() {
-  if (!url_field_ || !browser_ || url_field_->HasFocus())
+  if (!url_field_ || !browser_ || editing_url_)
     return;
   tabs::TabInterface* tab = browser_->GetActiveTabInterface();
   content::WebContents* contents = tab ? tab->GetContents() : nullptr;
