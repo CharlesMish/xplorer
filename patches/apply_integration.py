@@ -458,6 +458,25 @@ def patch_quiet_new_tab_row(src: Path):
         print(f"  skip (already applied): {bottom}")
 
 
+def patch_hover_close(src: Path):
+    """Arc/Dia: the vertical-tab close button shows on hover, not on the active row."""
+    path = src / "chrome/browser/ui/views/tabs/common/tab_view_vertical_layout.cc"
+    text = path.read_text()
+    if "XPLORER: Arc hover close" in text:
+        print(f"  skip (already applied): {path}")
+        return
+    old = "    return TabView().active_ || hovered_or_focused;\n"
+    new = (
+        "    // XPLORER: Arc hover close. The active row stays quiet; the X\n"
+        "    // shows only while the pointer or focus is on the tab.\n"
+        "    return hovered_or_focused;\n"
+    )
+    if old not in text:
+        sys.exit(f"ANCHOR NOT FOUND in {path} (hover close)")
+    path.write_text(text.replace(old, new, 1))
+    print(f"  edited: {path}")
+
+
 def patch_vertical_sidebar(src: Path):
     """Arc-style sidebar chrome in the vertical tab strip.
 
@@ -2660,6 +2679,7 @@ def main(src: Path):
     patch_vertical_sidebar(src)
     patch_soft_tab_pills(src)
     patch_quiet_new_tab_row(src)
+    patch_hover_close(src)
 
     patch_xplorer_settings_access(src)
 
