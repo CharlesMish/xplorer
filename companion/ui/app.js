@@ -1061,12 +1061,14 @@ function renderChatInfo() {
     }
   }
 
-  const settingsLink = document.createElement('a');
+  // The side panel blocks target=_blank, so this stays in the panel.
+  const settingsLink = document.createElement('button');
+  settingsLink.type = 'button';
   settingsLink.className = 'info-settings-link';
-  settingsLink.href = '/settings';
-  settingsLink.target = '_blank';
-  settingsLink.rel = 'noopener';
   settingsLink.textContent = 'Settings →';
+  settingsLink.addEventListener('click', () => {
+    window.location.assign(location.origin + '/settings');
+  });
   el.appendChild(settingsLink);
 }
 

@@ -586,6 +586,24 @@ html[data-theme="dark"] .markdown .hl-num { color: #fbbf24; }
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.92em;
 }
 
+.auth-actions {
+  display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; align-items: center;
+}
+.msg.thinking .retry-btn.login-btn {
+  background: var(--text, #111);
+  color: var(--bg, #fff);
+  border-color: transparent;
+  font-weight: 600;
+}
+.auth-login-status {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--text-secondary, #888);
+  min-height: 1.2em;
+}
+.auth-login-status.err { color: #e5484d; }
+
+
 /* Inline conversation delete-confirm + rename (window.confirm/prompt are
    suppressed in the side panel). */
 .conv-delete.confirm { color: #e5484d; font-weight: 700; }
@@ -696,6 +714,8 @@ html[data-theme="dark"] .markdown .hl-num { color: #fbbf24; }
 .chat-info .info-settings-link {
   display: inline-block; margin-top: 10px; font-size: 0.92em; color: inherit;
   opacity: 0.8; text-decoration: none; border-bottom: 1px dotted currentColor;
+  background: none; border-left: 0; border-right: 0; border-top: 0;
+  padding: 0; cursor: pointer; font: inherit;
 }
 .chat-info .info-settings-link:hover { opacity: 1; }
 

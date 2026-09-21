@@ -381,6 +381,15 @@ html.grok-build body {
   }
 }
 
+.settings-back {
+  display: inline-block;
+  margin: 0 0 12px;
+  color: inherit;
+  opacity: 0.75;
+  text-decoration: none;
+  font-size: 0.92em;
+}
+.settings-back:hover { opacity: 1; }
 .settings-head h1 {
   margin: 0 0 8px;
   font-size: 26px;
