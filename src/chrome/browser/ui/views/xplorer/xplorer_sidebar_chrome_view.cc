@@ -6,10 +6,14 @@
 #include <memory>
 
 #include "chrome/browser/ui/views/xplorer/xplorer_sidebar_section_label.h"
+#include "cc/paint/paint_flags.h"
 #include "third_party/skia/include/core/SkColor.h"
+#include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
+#include "ui/gfx/canvas.h"
 #include "ui/gfx/font.h"
 #include "ui/gfx/geometry/insets.h"
+#include "ui/gfx/geometry/rect_f.h"
 #include "ui/views/controls/label.h"
 #include "ui/views/layout/box_layout.h"
 #include "ui/views/view_class_properties.h"
@@ -19,7 +23,29 @@ namespace xplorer {
 namespace {
 constexpr gfx::Insets kHeaderMargins = gfx::Insets::TLBR(10, 6, 2, 6);
 constexpr gfx::Insets kSectionLabelMargins = gfx::Insets::TLBR(14, 8, 2, 8);
-constexpr SkColor kSpaceDot = SkColorSetRGB(0x3D, 0x7E, 0xFF);
+constexpr SkColor kSpaceSwatch = SkColorSetRGB(0x3D, 0x7E, 0xFF);
+constexpr int kSpaceSwatchSize = 16;
+
+// Arc/Dia space mark: a rounded tile, not a text bullet on the baseline.
+class XplorerSpaceSwatch : public views::View {
+  METADATA_HEADER(XplorerSpaceSwatch, views::View)
+
+ public:
+  XplorerSpaceSwatch() {
+    SetPreferredSize(gfx::Size(kSpaceSwatchSize, kSpaceSwatchSize));
+  }
+
+  void OnPaint(gfx::Canvas* canvas) override {
+    cc::PaintFlags flags;
+    flags.setAntiAlias(true);
+    flags.setStyle(cc::PaintFlags::kFill_Style);
+    flags.setColor(kSpaceSwatch);
+    canvas->DrawRoundRect(gfx::RectF(GetLocalBounds()), 5.f, flags);
+  }
+};
+
+BEGIN_METADATA(XplorerSpaceSwatch)
+END_METADATA
 
 }  // namespace
 
@@ -42,11 +68,7 @@ XplorerSidebarChromeView::XplorerSidebarChromeView(
   header_layout->set_cross_axis_alignment(
       views::BoxLayout::CrossAxisAlignment::kCenter);
   header->SetProperty(views::kMarginsKey, kHeaderMargins);
-  // A views::View subclass here must carry METADATA_HEADER or AddChildView
-  // fails to compile. A tinted bullet is the same Arc space swatch.
-  auto* dot = header->AddChildView(std::make_unique<views::Label>(u"●"));
-  dot->SetEnabledColor(kSpaceDot);
-  dot->SetFontList(dot->font_list().DeriveWithSizeDelta(-2));
+  header->AddChildView(std::make_unique<XplorerSpaceSwatch>());
   auto* title = header->AddChildView(std::make_unique<views::Label>(u"Xplor"));
   title->SetHorizontalAlignment(gfx::ALIGN_LEFT);
   title->SetFontList(title->font_list().DeriveWithSizeDelta(1).DeriveWithWeight(
