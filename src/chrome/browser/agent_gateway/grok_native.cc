@@ -4082,6 +4082,18 @@ bool GrokNative::TryHandleRequest(
             server, io_task_runner, connection_id));
     return true;
   }
+  if (info.method == "POST" && path == "/api/system/privacy") {
+#if BUILDFLAG(IS_MAC)
+    base::CommandLine open(base::FilePath("/usr/bin/open"));
+    open.AppendArg(
+        "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles");
+    base::LaunchProcess(open, base::LaunchOptions());
+#endif
+    base::DictValue d;
+    d.Set("ok", true);
+    SendJson(server, connection_id, net::HTTP_OK, std::move(d));
+    return true;
+  }
   if (info.method == "POST" && path == "/api/import") {
     auto body = base::JSONReader::ReadDict(info.data, base::JSON_PARSE_RFC);
     const int index = body ? body->FindInt("index").value_or(-1) : -1;

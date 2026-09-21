@@ -38,6 +38,12 @@ class WelcomeFlowTest(unittest.TestCase):
         self.assertIn("location.assign(status.url)", JS)
         self.assertIn("/api/grok/login", JS)
 
+    def test_safari_is_offered_even_when_macos_hides_it(self):
+        self.assertIn("name: 'Safari'", JS)
+        self.assertIn("name: 'Google Chrome'", JS)
+        self.assertIn("Full Disk Access", JS)
+        self.assertIn("/api/system/privacy", JS)
+
     def test_import_and_default_endpoints(self):
         self.assertIn("/api/import/browsers", JS)
         self.assertIn("/api/import", JS)

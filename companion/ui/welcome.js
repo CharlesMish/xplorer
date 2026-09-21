@@ -108,44 +108,79 @@ async function startGrokLogin() {
   }
 }
 
+const KNOWN_MAC_BROWSERS = [
+  { name: 'Safari', profileName: 'Bookmarks on this Mac', locked: true },
+  { name: 'Google Chrome', profileName: 'Bookmarks on this Mac', locked: true },
+];
+
+function browserLabel(browser) {
+  return (browser.name || '').toLowerCase();
+}
+
 async function loadBrowsers() {
   const list = document.getElementById('browser-list');
   if (!list) return;
   list.textContent = 'Looking for Safari and other browsers…';
+  let detected = [];
   try {
     const res = await fetch('/api/import/browsers', { cache: 'no-store' });
     if (!res.ok) throw new Error('import list unavailable');
     const data = await res.json();
-    state.browsers = Array.isArray(data.browsers) ? data.browsers : [];
+    detected = Array.isArray(data.browsers) ? data.browsers : [];
   } catch (err) {
     console.error(err);
-    state.browsers = [];
   }
+  const seen = new Set(detected.map(browserLabel));
+  const offered = detected.slice();
+  for (const known of KNOWN_MAC_BROWSERS) {
+    if (!seen.has(browserLabel(known))) {
+      offered.unshift({ ...known, index: -1 });
+    }
+  }
+  state.browsers = offered;
   list.replaceChildren();
-  if (!state.browsers.length) {
+  if (!offered.length) {
     list.textContent = 'No other browsers were found. You can skip this step.';
     return;
   }
-  state.browsers.forEach((browser, i) => {
+  offered.forEach((browser, i) => {
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'choice' + (i === 0 ? ' selected' : '');
     button.innerHTML = `<strong></strong><small></small>`;
     button.querySelector('strong').textContent = browser.name || 'Browser';
-    button.querySelector('small').textContent = browser.profileName || 'Default profile';
+    const locked = browser.index < 0;
+    button.querySelector('small').textContent = locked
+      ? 'macOS is hiding this. Allow Xplor in Full Disk Access, then check again.'
+      : (browser.profileName || 'Default profile');
     button.addEventListener('click', () => {
       state.browserIndex = browser.index;
+      state.browserLocked = locked;
       list.querySelectorAll('.choice').forEach((el) => el.classList.remove('selected'));
       button.classList.add('selected');
     });
     list.appendChild(button);
   });
-  state.browserIndex = state.browsers[0].index;
+  state.browserIndex = offered[0].index;
+  state.browserLocked = offered[0].index < 0;
+}
+
+async function openPrivacySettings() {
+  try {
+    const res = await fetch('/api/system/privacy', { method: 'POST' });
+    if (res.ok) return;
+  } catch { /* older build: tell the user where to click */ }
+  setError('import-error', 'Open System Settings → Privacy & Security → Full Disk Access, allow Xplor, then click Check again.');
 }
 
 async function runImport() {
   setError('import-error', '');
   const button = document.getElementById('do-import');
+  if (state.browserLocked) {
+    setError('import-error', 'macOS is hiding that browser. Allow Xplor in Full Disk Access, then check again.');
+    openPrivacySettings();
+    return;
+  }
   if (!state.browsers.length) {
     show('favorites');
     return;
@@ -281,6 +316,7 @@ document.getElementById('sign-in')?.addEventListener('click', startGrokLogin);
 document.getElementById('skip-sign-in')?.addEventListener('click', () => show('import'));
 document.getElementById('do-import')?.addEventListener('click', runImport);
 document.getElementById('skip-import')?.addEventListener('click', () => show('favorites'));
+document.getElementById('recheck-import')?.addEventListener('click', () => loadBrowsers());
 document.getElementById('save-apps')?.addEventListener('click', () => show('theme'));
 document.getElementById('save-theme')?.addEventListener('click', () => show('default'));
 document.getElementById('make-default')?.addEventListener('click', () => finish(true));
