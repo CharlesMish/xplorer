@@ -569,6 +569,94 @@ def patch_quiet_tab_type(src: Path):
         print(f"  skip (already applied): {view}")
 
 
+def patch_page_card(src: Path):
+    """Arc/Dia: the page is a rounded card, not flush with the window."""
+    view = src / "chrome/browser/ui/views/frame/browser_view.cc"
+    vtext = view.read_text()
+    if "XPLORER: page card" in vtext:
+        print(f"  skip (already applied): {view}")
+    else:
+        old = "  GetWidget()->SetBackgroundColor(kColorToolbar);\n"
+        new = (
+            "  // XPLORER: page card. The gap around the page is the same\n"
+            "  // plane as the sidebar, not the Chrome toolbar color.\n"
+            "  const auto* vts =\n"
+            "      tabs::VerticalTabStripStateController::From(browser());\n"
+            "  if (vts && vts->ShouldDisplayVerticalTabs()) {\n"
+            "    GetWidget()->SetBackgroundColor(ui::kColorSysSurface3);\n"
+            "  } else {\n"
+            "    GetWidget()->SetBackgroundColor(kColorToolbar);\n"
+            "  }\n"
+        )
+        if old not in vtext:
+            sys.exit(f"ANCHOR NOT FOUND in {view} (widget background)")
+        view.write_text(vtext.replace(old, new, 1))
+        print(f"  edited: {view}")
+
+    layout = src / (
+        "chrome/browser/ui/views/frame/layout/"
+        "browser_view_tabbed_layout_impl.cc"
+    )
+    ltext = layout.read_text()
+    if "XPLORER: page card" in ltext:
+        print(f"  skip (already applied): {layout}")
+        return
+    old = (
+        "  auto& contents_layout =\n"
+        "      layout.AddChild(views().multi_contents_view,\n"
+        "                      gfx::Rect(content_left, params.visual_client_area.y(),\n"
+        "                                content_right - content_left,\n"
+        "                                params.visual_client_area.height()));\n"
+    )
+    new = (
+        "  int content_top = params.visual_client_area.y();\n"
+        "  int content_height = params.visual_client_area.height();\n"
+        "  // XPLORER: page card. Inset the page so it sits on the chrome\n"
+        "  // plane instead of filling the window like a Chrome tab.\n"
+        "  if (layout_data_->tab_strip_type == TabStripType::kVertical &&\n"
+        "      !is_fullscreen(layout_data_->window_state)) {\n"
+        "    constexpr int kCardInset = 8;\n"
+        "    constexpr int kCardLeading = 6;\n"
+        "    content_top += kCardInset;\n"
+        "    content_height = std::max(0, content_height - kCardInset * 2);\n"
+        "    if (base::i18n::IsRTL()) {\n"
+        "      content_right = std::max(content_left, content_right - kCardLeading);\n"
+        "      content_left += kCardInset;\n"
+        "    } else {\n"
+        "      content_left += kCardLeading;\n"
+        "      content_right = std::max(content_left, content_right - kCardInset);\n"
+        "    }\n"
+        "  }\n"
+        "  auto& contents_layout =\n"
+        "      layout.AddChild(views().multi_contents_view,\n"
+        "                      gfx::Rect(content_left, content_top,\n"
+        "                                std::max(0, content_right - content_left),\n"
+        "                                content_height));\n"
+    )
+    if old not in ltext:
+        sys.exit(f"ANCHOR NOT FOUND in {layout} (contents bounds)")
+    ltext = ltext.replace(old, new, 1)
+    old = (
+        "    views().multi_contents_view->SetBackgroundRadii(content_corners);\n"
+        "  }\n"
+    )
+    new = (
+        "    views().multi_contents_view->SetBackgroundRadii(content_corners);\n"
+        "  }\n"
+        "  // XPLORER: page card. Round every corner. The glass path above only\n"
+        "  // rounds the lower leading corner, and only sometimes.\n"
+        "  if (layout_data_->tab_strip_type == TabStripType::kVertical &&\n"
+        "      !is_fullscreen(layout_data_->window_state)) {\n"
+        "    views().multi_contents_view->SetBackgroundRadii(\n"
+        "        gfx::RoundedCornersF(12.f));\n"
+        "  }\n"
+    )
+    if old not in ltext:
+        sys.exit(f"ANCHOR NOT FOUND in {layout} (corner radii)")
+    layout.write_text(ltext.replace(old, new, 1))
+    print(f"  edited: {layout}")
+
+
 def patch_toolbar_plane(src: Path):
     """Arc/Dia: the toolbar is the sidebar's plane, not a Chrome strip."""
     toolbar = src / "chrome/browser/ui/views/toolbar/toolbar_view.cc"
@@ -3280,6 +3368,7 @@ def main(src: Path):
     patch_quiet_toolbar_pins(src)
     patch_quiet_toolbar_edge(src)
     patch_toolbar_plane(src)
+    patch_page_card(src)
 
     patch_xplorer_settings_access(src)
 
