@@ -569,6 +569,49 @@ def patch_quiet_tab_type(src: Path):
         print(f"  skip (already applied): {view}")
 
 
+def patch_quiet_toolbar_pins(src: Path):
+    """Arc/Dia: the toolbar keeps Grok and drops Chrome Labs and tab search."""
+    path = src / (
+        "chrome/browser/ui/toolbar/pinned_toolbar/"
+        "pinned_toolbar_actions_model.cc"
+    )
+    text = path.read_text()
+    if "XPLORER: quiet toolbar" in text:
+        print(f"  skip (already applied): {path}")
+        return
+    old = (
+        "  // XPLORER: keep the Grok side-panel button pinned (always visible).\n"
+        "  UpdatePinnedState(kActionSidePanelShowSearchCompanion, true);\n"
+    )
+    new = (
+        "  // XPLORER: keep the Grok side-panel button pinned (always visible).\n"
+        "  UpdatePinnedState(kActionSidePanelShowSearchCompanion, true);\n"
+        "  // XPLORER: quiet toolbar. Chrome Labs and tab search are toolbar\n"
+        "  // chrome. Grok stays. Tab search remains on the keyboard.\n"
+        "  UpdatePinnedState(kActionShowChromeLabs, false);\n"
+        "  UpdatePinnedState(kActionTabSearch, false);\n"
+    )
+    if old not in text:
+        sys.exit(f"ANCHOR NOT FOUND in {path} (grok pin)")
+    text = text.replace(old, new, 1)
+    old = (
+        "  if (!pref_service_->GetBoolean(prefs::kPinnedChromeLabsMigrationComplete)) {\n"
+        "    UpdatePinnedState(kActionShowChromeLabs, true);\n"
+        "    pref_service_->SetBoolean(prefs::kPinnedChromeLabsMigrationComplete, true);\n"
+        "  }\n"
+    )
+    new = (
+        "  if (!pref_service_->GetBoolean(prefs::kPinnedChromeLabsMigrationComplete)) {\n"
+        "    // XPLORER: quiet toolbar. Do not pin Chrome Labs.\n"
+        "    pref_service_->SetBoolean(prefs::kPinnedChromeLabsMigrationComplete, true);\n"
+        "  }\n"
+    )
+    if old not in text:
+        sys.exit(f"ANCHOR NOT FOUND in {path} (labs migration)")
+    path.write_text(text.replace(old, new, 1))
+    print(f"  edited: {path}")
+
+
 def patch_favorites_density(src: Path):
     """Arc/Dia: vertical tabs are a short favorites list, not a Chrome grid."""
     constants = src / "chrome/browser/ui/layout_constants.cc"
@@ -3127,6 +3170,7 @@ def main(src: Path):
     patch_quiet_tab_type(src)
     patch_quiet_sidebar_toolbar(src)
     patch_favorites_density(src)
+    patch_quiet_toolbar_pins(src)
 
     patch_xplorer_settings_access(src)
 
