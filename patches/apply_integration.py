@@ -625,18 +625,20 @@ def patch_floating_address_pill(src: Path):
     if "XPLORER: floating address pill" in btext:
         print(f"  skip (already applied): {bar}")
         return
-    old_inc = (
+    # The quiet-omnibox edit adds this include, but it runs later. A host
+    # that has not had that edit yet still has the upstream include.
+    vts_inc = (
         '#include "chrome/browser/ui/tabs/vertical_tab_strip_state_controller.h"'
         "  // XPLORER\n"
     )
-    new_inc = (
-        '#include "chrome/browser/ui/tabs/vertical_tab_strip_state_controller.h"'
-        "  // XPLORER\n"
-        '#include "ui/gfx/color_utils.h"  // XPLORER\n'
-    )
-    if old_inc not in btext:
-        sys.exit(f"ANCHOR NOT FOUND in {bar} (include)")
-    btext = btext.replace(old_inc, new_inc, 1)
+    color_inc = '#include "ui/gfx/color_utils.h"  // XPLORER\n'
+    if vts_inc not in btext:
+        old_inc = '#include "chrome/browser/ui/layout_constants.h"\n'
+        if old_inc not in btext:
+            sys.exit(f"ANCHOR NOT FOUND in {bar} (include)")
+        btext = btext.replace(old_inc, old_inc + vts_inc, 1)
+    if color_inc not in btext:
+        btext = btext.replace(vts_inc, vts_inc + color_inc, 1)
     old = (
         "    background_color_ = gfx::Tween::ColorValueBetween(opacity, normal, hovered);\n"
         "  }\n"
