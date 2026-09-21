@@ -569,6 +569,98 @@ def patch_quiet_tab_type(src: Path):
         print(f"  skip (already applied): {view}")
 
 
+def patch_quiet_toolbar_scale(src: Path):
+    """Arc/Dia: the address pill and nav buttons are shorter than Chrome's."""
+    constants = src / "chrome/browser/ui/layout_constants.cc"
+    ctext = constants.read_text()
+    if "XPLORER: quiet toolbar scale" in ctext:
+        print(f"  skip (already applied): {constants}")
+    else:
+        old = (
+            "    case LayoutConstant::kToolbarButtonHeight:\n"
+            "      return touch_ui ? 48 : 34;\n"
+        )
+        new = (
+            "    case LayoutConstant::kToolbarButtonHeight:\n"
+            "      // XPLORER: quiet toolbar scale.\n"
+            "      return touch_ui ? 48 : 28;\n"
+        )
+        if old not in ctext:
+            sys.exit(f"ANCHOR NOT FOUND in {constants} (button height)")
+        ctext = ctext.replace(old, new, 1)
+        old = (
+            "    case LayoutConstant::kLocationBarHeight:\n"
+            "      return touch_ui ? 36 : 34;\n"
+        )
+        new = (
+            "    case LayoutConstant::kLocationBarHeight:\n"
+            "      // XPLORER: quiet toolbar scale. A shorter pill.\n"
+            "      return touch_ui ? 36 : 28;\n"
+        )
+        if old not in ctext:
+            sys.exit(f"ANCHOR NOT FOUND in {constants} (location bar height)")
+        constants.write_text(ctext.replace(old, new, 1))
+        print(f"  edited: {constants}")
+
+    toolbar = src / "chrome/browser/ui/views/toolbar/toolbar_view.cc"
+    text = toolbar.read_text()
+    if "XPLORER: quiet toolbar scale" in text:
+        print(f"  skip (already applied): {toolbar}")
+        return
+    old = (
+        "    location_bar_view_->SetProperty(views::kMarginsKey,\n"
+        "                                    gfx::Insets::VH(0, location_bar_margin));\n"
+    )
+    new = (
+        "    int omnibox_side = location_bar_margin;\n"
+        "    if (const auto* vts =\n"
+        "            tabs::VerticalTabStripStateController::From(browser_);\n"
+        "        vts && vts->ShouldDisplayVerticalTabs()) {\n"
+        "      // XPLORER: quiet toolbar scale. Pull the pill off the nav buttons.\n"
+        "      omnibox_side = 16;\n"
+        "    }\n"
+        "    location_bar_view_->SetProperty(views::kMarginsKey,\n"
+        "                                    gfx::Insets::VH(0, omnibox_side));\n"
+    )
+    count = text.count(old)
+    if count == 0:
+        sys.exit(f"ANCHOR NOT FOUND in {toolbar} (omnibox margin)")
+    text = text.replace(old, new)
+    old_touch = (
+        "      location_bar_view_->SetProperty(views::kMarginsKey,\n"
+        "                                      gfx::Insets::VH(0, location_bar_margin));\n"
+    )
+    new_touch = (
+        "      int omnibox_side = location_bar_margin;\n"
+        "      if (const auto* vts =\n"
+        "              tabs::VerticalTabStripStateController::From(browser_);\n"
+        "          vts && vts->ShouldDisplayVerticalTabs()) {\n"
+        "        omnibox_side = 16;\n"
+        "      }\n"
+        "      location_bar_view_->SetProperty(views::kMarginsKey,\n"
+        "                                      gfx::Insets::VH(0, omnibox_side));\n"
+    )
+    if old_touch in text:
+        text = text.replace(old_touch, new_touch, 1)
+    old = (
+        "  auto* vts_controller = tabs::VerticalTabStripStateController::From(browser_);\n"
+        "  if (contextual_tasks::IsContextualTasksUIEnabled() &&\n"
+    )
+    new = (
+        "  auto* vts_controller = tabs::VerticalTabStripStateController::From(browser_);\n"
+        "  if (vts_controller && vts_controller->ShouldDisplayVerticalTabs()) {\n"
+        "    // XPLORER: quiet toolbar scale. Less air above and below the pill.\n"
+        "    interior_margin.set_top(4);\n"
+        "    interior_margin.set_bottom(4);\n"
+        "  }\n"
+        "  if (contextual_tasks::IsContextualTasksUIEnabled() &&\n"
+    )
+    if old not in text:
+        sys.exit(f"ANCHOR NOT FOUND in {toolbar} (interior margin)")
+    toolbar.write_text(text.replace(old, new, 1))
+    print(f"  edited: {toolbar}")
+
+
 def patch_page_card(src: Path):
     """Arc/Dia: the page is a rounded card, not flush with the window."""
     view = src / "chrome/browser/ui/views/frame/browser_view.cc"
@@ -3369,6 +3461,7 @@ def main(src: Path):
     patch_quiet_toolbar_edge(src)
     patch_toolbar_plane(src)
     patch_page_card(src)
+    patch_quiet_toolbar_scale(src)
 
     patch_xplorer_settings_access(src)
 
