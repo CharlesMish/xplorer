@@ -569,6 +569,54 @@ def patch_quiet_tab_type(src: Path):
         print(f"  skip (already applied): {view}")
 
 
+def patch_quiet_omnibox_icon(src: Path):
+    """Arc/Dia: the idle lock is not drawn in the address pill."""
+    path = src / "chrome/browser/ui/views/location_bar/location_bar_view.cc"
+    text = path.read_text()
+    if "XPLORER: quiet omnibox" in text:
+        print(f"  skip (already applied): {path}")
+        return
+    old_inc = '#include "chrome/browser/ui/layout_constants.h"\n'
+    new_inc = (
+        '#include "chrome/browser/ui/layout_constants.h"\n'
+        '#include "chrome/browser/ui/tabs/vertical_tab_strip_state_controller.h"'
+        "  // XPLORER\n"
+    )
+    if old_inc not in text:
+        sys.exit(f"ANCHOR NOT FOUND in {path} (include)")
+    text = text.replace(old_inc, new_inc, 1)
+    old = (
+        "  } else if (!ShouldChipOverrideLocationIcon()) {\n"
+        "    location_icon_view_->SetVisible(true);\n"
+        "    leading_decorations.AddDecoration(vertical_padding, location_height, false,\n"
+        "                                      0, /*intra_item_padding=*/0, icon_left,\n"
+        "                                      location_icon_view_);\n"
+        "  } else {\n"
+    )
+    new = (
+        "  } else if (!ShouldChipOverrideLocationIcon()) {\n"
+        "    const auto* vts =\n"
+        "        browser_\n"
+        "            ? tabs::VerticalTabStripStateController::From(browser_.get())\n"
+        "            : nullptr;\n"
+        "    // XPLORER: quiet omnibox. The idle lock is Chrome chrome. A\n"
+        "    // warning chip still shows when the page is not secure.\n"
+        "    if (vts && vts->ShouldDisplayVerticalTabs()) {\n"
+        "      location_icon_view_->SetVisible(false);\n"
+        "    } else {\n"
+        "      location_icon_view_->SetVisible(true);\n"
+        "      leading_decorations.AddDecoration(\n"
+        "          vertical_padding, location_height, false, 0,\n"
+        "          /*intra_item_padding=*/0, icon_left, location_icon_view_);\n"
+        "    }\n"
+        "  } else {\n"
+    )
+    if old not in text:
+        sys.exit(f"ANCHOR NOT FOUND in {path} (idle lock)")
+    path.write_text(text.replace(old, new, 1))
+    print(f"  edited: {path}")
+
+
 def patch_hide_idle_reload(src: Path):
     """Arc/Dia: no idle reload button. Stop still appears while a page loads."""
     path = src / "chrome/browser/ui/views/toolbar/reload_button.cc"
@@ -3495,6 +3543,7 @@ def main(src: Path):
     patch_page_card(src)
     patch_quiet_toolbar_scale(src)
     patch_hide_idle_reload(src)
+    patch_quiet_omnibox_icon(src)
 
     patch_xplorer_settings_access(src)
 
