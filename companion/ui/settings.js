@@ -57,7 +57,7 @@ async function loadAccount() {
     const res = await fetch('/api/grok/login', { cache: 'no-store' });
     if (res.ok) st = await res.json();
   } catch { /* unsigned */ }
-  const signed = !!(st.logged_in || st.ok);
+  const signed = st.logged_in === true || st.has_token === true;
   status.textContent = signed
     ? (st.account ? `Signed in as ${st.account}` : 'Signed in to Grok')
     : 'Not signed in';

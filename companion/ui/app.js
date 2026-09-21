@@ -1019,7 +1019,7 @@ function renderChatInfo() {
   fetch('/api/grok/login', { cache: 'no-store' })
     .then((r) => r.json())
     .then((st) => {
-      const signed = !!(st.logged_in || st.ok);
+      const signed = st.logged_in === true || st.has_token === true;
       who.textContent = signed
         ? (st.account ? `Signed in as ${st.account}` : 'Signed in to Grok')
         : 'Not signed in';

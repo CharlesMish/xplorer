@@ -82,6 +82,7 @@
 namespace agent_gateway {
 
 std::string LoadGrokAccountLabel();
+std::string LoadGrokOAuthAccessToken();
 
 namespace {
 
@@ -473,8 +474,11 @@ constexpr char kSearchHomeWiki[] = "wiki";
 constexpr char kGrokWikiHomeURL[] = "https://grokipedia.com/";
 
 constexpr char kChatRules[] =
-    "You are Grok, the native AI companion built into Xplor. You can "
-    "control the browser through MCP tools.";
+    "You are Grok, the native AI companion built into Xplor. Answer in "
+    "plain language. You cannot call tools, MCP, or a command line from "
+    "this chat. Do not say you will list tools, fetch tabs, or organize "
+    "them yourself. If the user asks to organize tabs, a short confirmation "
+    "is enough — the browser does that separately.";
 
 constexpr char kBrowserChatRules[] =
     "You are Grok, the native AI companion built into Xplor, an AI-native web "
@@ -895,7 +899,11 @@ base::DictValue GrokLoginStatusDict() {
   d.Set("running", s.running);
   d.Set("done", s.done);
   d.Set("ok", s.ok);
-  d.Set("logged_in", GrokAuthFileLooksValid());
+  // Chat and this card must agree. A finished login attempt is not the same
+  // as having a token the chat request can send.
+  const bool has_token = !LoadGrokOAuthAccessToken().empty();
+  d.Set("logged_in", has_token);
+  d.Set("has_token", has_token);
   const std::string account = LoadGrokAccountLabel();
   if (!account.empty())
     d.Set("account", account);
@@ -1024,7 +1032,8 @@ void RunGrokLoginOAuthWorker() {
     }
   }
 
-  const bool ok = ran && exit_code == 0;
+  const bool saved = !LoadGrokOAuthAccessToken().empty();
+  const bool ok = ran && exit_code == 0 && saved;
   {
     base::AutoLock lock(LoginState().lock);
     LoginState().running = false;
@@ -1035,7 +1044,8 @@ void RunGrokLoginOAuthWorker() {
       LoginState().error.clear();
     } else if (LoginState().error.empty()) {
       LoginState().error =
-          ran ? "Sign-in did not complete. Try again."
+          ran ? (saved ? "Sign-in did not complete. Try again."
+                     : "Sign-in finished, but no Grok token was saved. Try again.")
               : "Could not start Grok login. Is the Grok CLI installed?";
       LoginState().message.clear();
     }
@@ -2757,14 +2767,22 @@ std::string LoadGrokOAuthAccessToken() {
       base::JSONReader::ReadDict(contents, base::JSON_PARSE_RFC);
   if (!root)
     return {};
+  auto take = [](const base::DictValue& account) -> std::string {
+    for (const char* field : {"key", "access_token", "token", "api_key"}) {
+      const std::string* value = account.FindString(field);
+      if (value && value->size() > 20)
+        return *value;
+    }
+    return {};
+  };
   std::string token;
   for (auto [unused_name, value] : *root) {
     if (!value.is_dict())
       continue;
-    const std::string* key = value.GetDict().FindString("key");
-    if (!key || key->empty())
+    std::string candidate = take(value.GetDict());
+    if (candidate.empty())
       continue;
-    token = *key;
+    token = std::move(candidate);
     if (value.GetDict().FindString("refresh_token"))
       break;
   }
@@ -2807,6 +2825,12 @@ base::ListValue OAuthMessagesForConversation(const std::string& conv_id,
           if (!role || !content || content->empty())
             continue;
           if (*role != "user" && *role != "assistant" && *role != "system")
+            continue;
+          // A previous reply that looped on "I'll list MCP tools" poisons the
+          // next turn. Drop those instead of feeding them back.
+          if (*role == "assistant" &&
+              content->find("MCP tools") != std::string::npos &&
+              content->find("fetch the current tabs") != std::string::npos)
             continue;
           base::DictValue item;
           item.Set("role", *role);
@@ -2937,8 +2961,13 @@ void PumpGrokOAuthChat(
   std::string buffer;
   std::string full_text;
   std::string http_error;
+  bool stop_for_loop = false;
   char read_buf[4096];
   while (true) {
+    if (stop_for_loop) {
+      io->process.Terminate(/*exit_code=*/0, /*wait=*/false);
+      break;
+    }
     if (!IsActiveRun(conv_id)) {
       io->process.Terminate(/*exit_code=*/0, /*wait=*/false);
       break;
@@ -2984,6 +3013,19 @@ void PumpGrokOAuthChat(
       if (piece.empty())
         continue;
       full_text += piece;
+      // Stop a runaway narration. The same sentence three times is a loop,
+      // not an answer.
+      if (piece.size() >= 24) {
+        const std::string needle = piece.substr(0, std::min<size_t>(piece.size(), 48));
+        int hits = 0;
+        for (size_t at = 0; (at = full_text.find(needle, at)) != std::string::npos;
+             at += needle.size())
+          ++hits;
+        if (hits >= 3) {
+          stop_for_loop = true;
+          break;
+        }
+      }
       base::DictValue text_evt;
       text_evt.Set("type", "text");
       text_evt.Set("data", piece);
@@ -3181,8 +3223,11 @@ void RunGrokChatStream(
   // Sidebar chat uses the OAuth token directly. session_id is the old CLI
   // harness resume handle and is intentionally ignored.
   (void)session_id;
+  // OAuth chat has no tool channel. Browser-tool rules make the model
+  // narrate "I'll list MCP tools" forever. Organize-tabs is handled natively
+  // before this function is called.
   std::string rules =
-      std::string(ChatRulesForMessage(message)) +
+      std::string(kChatRules) +
       "\n\nIDENTITY: You are Grok, the AI assistant built into Xplor — an "
       "AI-native web browser (NOT Cursor or any code editor). You are running as "
       "the \"" +
@@ -4993,11 +5038,14 @@ bool GrokNative::TryHandleRequest(
       session_id = *sid;
     SaveSessions(data);
     if (chat_stream) {
-      // XPLORER: route ALL chat through the Grok agent so it actually reasons
-      // about the real open tabs (list -> decide sensible groups from each
-      // site -> xbrowser_group_tabs) instead of short-circuiting to a canned
-      // keyword heuristic. (The one-shot fast path stays available only as the
-      // explicit POST /api/browser/organize-tabs endpoint for the toolbar.)
+      // Organize-tabs used to be handed to a tool-calling agent. This chat
+      // path has no tools, so that request looped ("I'll list MCP tools").
+      // Group the open tabs natively instead.
+      if (MessageWantsOrganizeTabs(*message)) {
+        RunOrganizeTabsFastPath(server, io_task_runner, connection_id,
+                                conv_id);
+        return true;
+      }
       RunGrokChatStream(server, io_task_runner, connection_id, conv_id,
                         *message, session_id, model);
       return true;
