@@ -28,8 +28,12 @@
 
         <section class="settings-card" id="account-card">
           <h2>Grok account</h2>
+          <p class="settings-hint">This is the account Xplor uses to talk to Grok. Sign in opens a browser tab. Sign out removes that login from this Mac.</p>
           <p id="account-status" class="settings-hint">Checking…</p>
-          <button type="button" id="account-signin" class="settings-btn settings-btn-primary" hidden>Sign in</button>
+          <div class="settings-actions">
+            <button type="button" id="account-signin" class="settings-btn settings-btn-primary" hidden>Sign in</button>
+            <button type="button" id="account-signout" class="settings-btn" hidden>Sign out</button>
+          </div>
         </section>
 
         <section class="settings-card">

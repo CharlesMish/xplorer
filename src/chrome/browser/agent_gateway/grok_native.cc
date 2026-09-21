@@ -1042,6 +1042,52 @@ void RunGrokLoginOAuthWorker() {
   }
 }
 
+// Remove the signed-in OAuth account from ~/.grok/auth.json. Leaves any
+// unrelated keys in that file alone.
+base::DictValue SignOutGrokOAuth() {
+  base::FilePath home;
+  if (!base::PathService::Get(base::DIR_HOME, &home) || home.empty()) {
+    if (const char* h = getenv("HOME"); h && *h)
+      home = base::FilePath::FromUTF8Unsafe(h);
+  }
+  base::DictValue result;
+  if (home.empty()) {
+    result.Set("ok", false);
+    result.Set("error", "Could not find your home folder.");
+    return result;
+  }
+  base::FilePath path = home.AppendASCII(".grok").AppendASCII("auth.json");
+  std::string contents;
+  base::DictValue kept;
+  if (base::ReadFileToString(path, &contents)) {
+    if (auto root = base::JSONReader::ReadDict(contents, base::JSON_PARSE_RFC)) {
+      for (auto [name, value] : *root) {
+        if (!value.is_dict() || !value.GetDict().FindString("refresh_token"))
+          kept.Set(name, value.Clone());
+      }
+    }
+  }
+  std::string json = "{}";
+  base::JSONWriter::Write(kept, &json);
+  if (!base::WriteFile(path, json)) {
+    result.Set("ok", false);
+    result.Set("error", "Could not sign out.");
+    return result;
+  }
+  {
+    base::AutoLock lock(LoginState().lock);
+    LoginState().running = false;
+    LoginState().done = true;
+    LoginState().ok = false;
+    LoginState().url.clear();
+    LoginState().error.clear();
+    LoginState().message = "Signed out";
+  }
+  result.Set("ok", true);
+  result.Set("logged_in", false);
+  return result;
+}
+
 // Kick off OAuth login if not already running. Returns current status dict.
 base::DictValue StartGrokLoginOAuth() {
   {
@@ -2876,8 +2922,8 @@ void PumpGrokOAuthChat(
   cmd.AppendArg("@" + body_path.AsUTF8Unsafe());
 
   std::optional<GrokStdoutProcess> io = LaunchGrokStdoutProcess(cmd);
-  base::DeleteFile(body_path);
   if (!io.has_value()) {
+    base::DeleteFile(body_path);
     io_task_runner->PostTask(
         FROM_HERE, base::BindOnce(&SendStreamError, server, connection_id,
                                   "Could not reach Grok (curl failed to start)."));
@@ -2967,6 +3013,7 @@ void PumpGrokOAuthChat(
   }
   int exit_code = -1;
   io->process.WaitForExit(&exit_code);
+  base::DeleteFile(body_path);
   UnregisterActiveRun(conv_id);
 
   if (full_text.empty() && http_error.empty())
@@ -3064,8 +3111,8 @@ base::DictValue RunOAuthChatBlocking(const std::string& message,
   cmd.AppendArg("--data-binary");
   cmd.AppendArg("@" + body_path.AsUTF8Unsafe());
   std::optional<GrokStdoutProcess> io = LaunchGrokStdoutProcess(cmd);
-  base::DeleteFile(body_path);
   if (!io.has_value()) {
+    base::DeleteFile(body_path);
     out.Set("error", "Could not reach Grok.");
     return out;
   }
@@ -3114,6 +3161,7 @@ base::DictValue RunOAuthChatBlocking(const std::string& message,
   }
   int exit_code = -1;
   io->process.WaitForExit(&exit_code);
+  base::DeleteFile(body_path);
   if (full_text.empty()) {
     out.Set("error", http_error.empty() ? "Grok returned no reply." : http_error);
     return out;
@@ -3863,6 +3911,11 @@ bool GrokNative::TryHandleRequest(
   }
   if (info.method == "GET" && path == "/api/grok/login") {
     SendJson(server, connection_id, net::HTTP_OK, GrokLoginStatusDict());
+    return true;
+  }
+
+  if (info.method == "POST" && path == "/api/grok/logout") {
+    SendJson(server, connection_id, net::HTTP_OK, SignOutGrokOAuth());
     return true;
   }
 

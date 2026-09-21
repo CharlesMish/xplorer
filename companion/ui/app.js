@@ -1023,19 +1023,29 @@ function renderChatInfo() {
       who.textContent = signed
         ? (st.account ? `Signed in as ${st.account}` : 'Signed in to Grok')
         : 'Not signed in';
-      if (!signed) {
-        const btn = document.createElement('button');
-        btn.type = 'button';
-        btn.className = 'info-copy';
-        btn.textContent = 'Sign in';
-        btn.addEventListener('click', async () => {
-          btn.disabled = true;
-          const ok = await startGrokBrowserLogin(who);
-          btn.disabled = false;
-          if (ok) renderChatInfo();
-        });
-        account.appendChild(btn);
-      }
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'info-copy';
+      btn.textContent = signed ? 'Sign out' : 'Sign in';
+      btn.addEventListener('click', async () => {
+        btn.disabled = true;
+        if (signed) {
+          who.textContent = 'Signing out…';
+          try {
+            const res = await fetch('/api/grok/logout', { method: 'POST', cache: 'no-store' });
+            if (!res.ok) throw new Error('Could not sign out.');
+          } catch (e) {
+            who.textContent = e.message || 'Could not sign out.';
+            btn.disabled = false;
+            return;
+          }
+        } else {
+          await startGrokBrowserLogin(who);
+        }
+        btn.disabled = false;
+        renderChatInfo();
+      });
+      account.appendChild(btn);
     })
     .catch(() => { who.textContent = 'Not signed in'; });
 

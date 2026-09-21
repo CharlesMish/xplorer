@@ -50,6 +50,7 @@ async function init() {
 async function loadAccount() {
   const status = document.getElementById('account-status');
   const btn = document.getElementById('account-signin');
+  const out = document.getElementById('account-signout');
   if (!status) return;
   let st = {};
   try {
@@ -60,6 +61,23 @@ async function loadAccount() {
   status.textContent = signed
     ? (st.account ? `Signed in as ${st.account}` : 'Signed in to Grok')
     : 'Not signed in';
+  if (out) {
+    out.hidden = !signed;
+    out.onclick = async () => {
+      out.disabled = true;
+      status.textContent = 'Signing out…';
+      try {
+        const res = await fetch('/api/grok/logout', { method: 'POST', cache: 'no-store' });
+        if (!res.ok) throw new Error('Could not sign out.');
+      } catch (e) {
+        status.textContent = e.message || 'Could not sign out.';
+        out.disabled = false;
+        return;
+      }
+      out.disabled = false;
+      await loadAccount();
+    };
+  }
   if (btn) {
     btn.hidden = signed;
     btn.onclick = async () => {
