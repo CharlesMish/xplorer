@@ -79,6 +79,11 @@ h1 {
 
 .arrow:hover { background: #1e1e24; }
 
+.arrow:focus-visible {
+  outline: 2px solid #c5c8ce;
+  outline-offset: 4px;
+}
+
 .split {
   display: grid;
   grid-template-columns: 1.05fr 0.95fr;

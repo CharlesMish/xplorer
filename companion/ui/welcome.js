@@ -76,7 +76,8 @@ async function startGrokLogin() {
       show('import');
       return;
     }
-    for (let i = 0; i < 80; i++) {
+    // grok login can take up to a minute to print the auth URL.
+    for (let i = 0; i < 240; i++) {
       const poll = await fetch('/api/grok/login', { cache: 'no-store' });
       const status = await poll.json();
       if (status.logged_in || status.has_token) {
@@ -93,6 +94,9 @@ async function startGrokLogin() {
         break;
       }
       await sleep(250);
+    }
+    if (!document.getElementById('account-error')?.textContent) {
+      setError('account-error', 'Sign-in did not open. Try again.');
     }
   } catch (err) {
     setError('account-error', 'Could not start Grok sign-in.');
@@ -267,6 +271,12 @@ async function prepareDefault() {
 }
 
 document.getElementById('intro-next')?.addEventListener('click', () => show('account'));
+document.addEventListener('keydown', (event) => {
+  if (state.step !== 'intro') return;
+  if (event.key !== 'Enter' && event.key !== 'ArrowRight') return;
+  event.preventDefault();
+  show('account');
+});
 document.getElementById('sign-in')?.addEventListener('click', startGrokLogin);
 document.getElementById('skip-sign-in')?.addEventListener('click', () => show('import'));
 document.getElementById('do-import')?.addEventListener('click', runImport);
@@ -285,5 +295,6 @@ if (params.get('failed') === '1') {
   setError('account-error', 'Sign-in did not finish. Try again, or skip for now.');
 }
 show(STEPS.includes(requested) ? requested : 'intro');
+if (state.step === 'intro') document.getElementById('intro-next')?.focus();
 
 document.querySelector('.slogan') && (document.querySelector('.slogan').textContent = SLOGAN);
