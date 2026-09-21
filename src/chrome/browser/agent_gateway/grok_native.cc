@@ -70,6 +70,7 @@
 #include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
 #include "chrome/browser/ui/navigator/browser_navigator.h"
 #include "chrome/browser/ui/navigator/browser_navigator_params.h"
+#include "chrome/common/chrome_isolated_world_ids.h"
 #include "chrome/browser/ui/tabs/tab_enums.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "content/public/browser/browser_task_traits.h"
@@ -982,7 +983,11 @@ void ReturnToOnboardingStep(const std::string& step) {
 
 void InjectContinueSetupButton(content::WebContents* contents,
                                const GURL& dest) {
-  if (!contents || !contents->GetPrimaryMainFrame())
+  // ExecuteJavaScript() CHECK-fails on https pages. Isolated-world injection
+  // is the path the rest of Xplor uses, and only on a live committed frame.
+  content::RenderFrameHost* frame =
+      contents ? contents->GetPrimaryMainFrame() : nullptr;
+  if (!frame || !frame->IsRenderFrameLive() || !frame->IsActive())
     return;
   const std::string js = base::StringPrintf(
       R"JS((() => {
@@ -995,8 +1000,9 @@ void InjectContinueSetupButton(content::WebContents* contents,
         (document.body || document.documentElement).appendChild(a);
       })())JS",
       dest.spec().c_str());
-  contents->GetPrimaryMainFrame()->ExecuteJavaScript(
-      base::UTF8ToUTF16(js), base::NullCallback());
+  frame->ExecuteJavaScriptInIsolatedWorld(
+      base::UTF8ToUTF16(js), base::DoNothing(),
+      ISOLATED_WORLD_ID_CHROME_INTERNAL);
 }
 
 void WatchSignInTabs() {
