@@ -539,6 +539,10 @@ void SaveBookmarkSettings(base::ListValue bookmarks) {
 std::string MapModelId(const std::string& model) {
   if (model.empty() || model == kSearchModel /* "grok-build" */)
     return kFallbackCloudModel;
+  // The CLI lists grok-4.7 (API-key default). The OAuth chat proxy rejects it
+  // with 404, which the sidebar showed as "empty response from Grok".
+  if (model == "grok-4.7")
+    return "grok-4.6";
   return model;
 }
 
@@ -1155,6 +1159,17 @@ base::ListValue ListGrokModels() {
     if (space != std::string::npos)
       id = id.substr(0, space);
     if (id.empty() || id == "Default")
+      continue;
+    id = MapModelId(id);
+    bool already = false;
+    for (const auto& existing : models) {
+      if (!existing.is_dict())
+        continue;
+      const std::string* existing_id = existing.GetDict().FindString("id");
+      if (existing_id && *existing_id == id)
+        already = true;
+    }
+    if (already)
       continue;
     base::DictValue m;
     m.Set("id", id);
@@ -2766,6 +2781,16 @@ base::ListValue OAuthMessagesForConversation(const std::string& conv_id,
   return messages;
 }
 
+std::string ChatErrorText(const base::DictValue& parsed) {
+  if (const std::string* message = parsed.FindString("error"))
+    return *message;
+  if (const base::DictValue* err = parsed.FindDict("error")) {
+    if (const std::string* message = err->FindString("message"))
+      return *message;
+  }
+  return {};
+}
+
 std::string DeltaTextFromChatChunk(const base::DictValue& chunk) {
   const base::ListValue* choices = chunk.FindList("choices");
   if (!choices || choices->empty() || !(*choices)[0].is_dict())
@@ -2800,8 +2825,9 @@ void PumpGrokOAuthChat(
                        "Sign in to Grok to chat. Click Sign in."));
     return;
   }
+  model = MapModelId(model);
   if (model.empty())
-    model = "grok-build";
+    model = "grok-4.6";
 
   base::DictValue body;
   body.Set("model", model);
@@ -2903,9 +2929,9 @@ void PumpGrokOAuthChat(
       auto parsed = base::JSONReader::ReadDict(payload, base::JSON_PARSE_RFC);
       if (!parsed)
         continue;
-      if (const base::DictValue* err = parsed->FindDict("error")) {
-        if (const std::string* msg = err->FindString("message"))
-          http_error = *msg;
+      const std::string err_text = ChatErrorText(*parsed);
+      if (!err_text.empty()) {
+        http_error = err_text;
         continue;
       }
       const std::string piece = DeltaTextFromChatChunk(*parsed);
@@ -2923,11 +2949,29 @@ void PumpGrokOAuthChat(
                                     std::move(out)));
     }
   }
+  if (!buffer.empty()) {
+    std::string payload = buffer;
+    base::TrimWhitespaceASCII(payload, base::TRIM_ALL, &payload);
+    if (base::StartsWith(payload, "data:"))
+      payload = std::string(base::TrimWhitespaceASCII(payload.substr(5),
+                                                      base::TRIM_ALL));
+    if (!payload.empty() && payload[0] == '{') {
+      if (auto parsed = base::JSONReader::ReadDict(payload, base::JSON_PARSE_RFC)) {
+        const std::string err_text = ChatErrorText(*parsed);
+        if (!err_text.empty())
+          http_error = err_text;
+        else
+          full_text += DeltaTextFromChatChunk(*parsed);
+      }
+    }
+  }
   int exit_code = -1;
   io->process.WaitForExit(&exit_code);
   UnregisterActiveRun(conv_id);
 
-  if (full_text.empty() && !http_error.empty()) {
+  if (full_text.empty() && http_error.empty())
+    http_error = "Grok returned no reply.";
+  if (full_text.empty()) {
     base::DictValue err;
     err.Set("type", "error");
     err.Set("error", http_error);
@@ -2969,7 +3013,9 @@ base::DictValue RunOAuthChatBlocking(const std::string& message,
     out.Set("error", "Sign in to Grok to chat. Click Sign in.");
     return out;
   }
-  std::string use_model = model.empty() ? "grok-build" : model;
+  std::string use_model = MapModelId(model);
+  if (use_model.empty())
+    use_model = "grok-4.6";
   base::ListValue messages;
   base::DictValue system;
   system.Set("role", "system");
@@ -3058,9 +3104,9 @@ base::DictValue RunOAuthChatBlocking(const std::string& message,
       auto parsed = base::JSONReader::ReadDict(payload, base::JSON_PARSE_RFC);
       if (!parsed)
         continue;
-      if (const base::DictValue* err = parsed->FindDict("error")) {
-        if (const std::string* msg = err->FindString("message"))
-          http_error = *msg;
+      const std::string err_text = ChatErrorText(*parsed);
+      if (!err_text.empty()) {
+        http_error = err_text;
         continue;
       }
       full_text += DeltaTextFromChatChunk(*parsed);
