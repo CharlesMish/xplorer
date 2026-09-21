@@ -17,8 +17,8 @@
 namespace xplorer {
 
 namespace {
-constexpr gfx::Insets kHeaderMargins = gfx::Insets::TLBR(2, 2, 6, 2);
-constexpr gfx::Insets kSectionLabelMargins = gfx::Insets::TLBR(8, 4, 2, 4);
+constexpr gfx::Insets kHeaderMargins = gfx::Insets::TLBR(10, 6, 2, 6);
+constexpr gfx::Insets kSectionLabelMargins = gfx::Insets::TLBR(14, 8, 2, 8);
 constexpr SkColor kSpaceDot = SkColorSetRGB(0x3D, 0x7E, 0xFF);
 
 }  // namespace
@@ -38,7 +38,7 @@ XplorerSidebarChromeView::XplorerSidebarChromeView(
   auto* header_layout =
       header->SetLayoutManager(std::make_unique<views::BoxLayout>(
           views::BoxLayout::Orientation::kHorizontal,
-          gfx::Insets::VH(2, 4), 8));
+          gfx::Insets::VH(6, 6), 8));
   header_layout->set_cross_axis_alignment(
       views::BoxLayout::CrossAxisAlignment::kCenter);
   header->SetProperty(views::kMarginsKey, kHeaderMargins);

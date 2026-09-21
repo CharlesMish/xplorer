@@ -152,10 +152,10 @@ def patch_xplorer_settings_access(src: Path):
     edit(
         bcc,
         "    case IDC_OPTIONS:\n"
-        "      ShowSettings(browser_->GetBrowserForOpeningWebUi());\n"
+        "      ShowSettings(webui::GetBrowserForOpeningWebUi(browser_));\n"
         "      break;",
         "    case IDC_OPTIONS:\n"
-        "      ShowSettings(browser_->GetBrowserForOpeningWebUi());\n"
+        "      ShowSettings(webui::GetBrowserForOpeningWebUi(browser_));\n"
         "      break;\n"
         "    case IDC_XPLORER_SETTINGS:  // XPLORER\n"
         "      xplorer::OpenXplorerSettings(browser_);\n"
@@ -291,6 +291,34 @@ def patch_soft_tab_pills(src: Path):
         "GetCornerRadius",
     )
     path.write_text(text)
+    print(f"  edited: {path}")
+
+
+def patch_sidebar_plane(src: Path):
+    """Dia/Arc: the sidebar is its own flat plane, not Chrome's window frame."""
+    path = src / "chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc"
+    text = path.read_text()
+    if "XPLORER: sidebar plane" in text:
+        print(f"  skip (already applied): {path}")
+        return
+    old = (
+        "  SetBackground(std::make_unique<CustomCornersBackground>(\n"
+        "      *this, *browser_view,\n"
+        "      /*primary_color=*/CustomCornersBackground::FrameTheme(),\n"
+        "      /*corner_color=*/CustomCornersBackground::ToolbarTheme()));\n"
+    )
+    new = (
+        "  // XPLORER: sidebar plane. Chrome paints this with the window frame,\n"
+        "  // which is why vertical tabs still look like Chrome. Dia and Arc use\n"
+        "  // a flat neutral surface that is separate from the page.\n"
+        "  SetBackground(std::make_unique<CustomCornersBackground>(\n"
+        "      *this, *browser_view,\n"
+        "      /*primary_color=*/ui::kColorSysSurface3,\n"
+        "      /*corner_color=*/ui::kColorSysSurface3));\n"
+    )
+    if old not in text:
+        sys.exit(f"ANCHOR NOT FOUND in {path} (sidebar plane)")
+    path.write_text(text.replace(old, new, 1))
     print(f"  edited: {path}")
 
 
@@ -576,13 +604,9 @@ def patch_vertical_sidebar(src: Path):
     if "InstallXplorerSidebarChrome" not in vts_h_text:
         edit(
             vts_h,
-            "  VerticalPinnedTabContainerView* GetPinnedTabsContainer();\n"
-            "  VerticalUnpinnedTabContainerView* GetUnpinnedTabsContainer();\n\n"
             "  VerticalTabStripTopContainer* GetTopContainer() {\n"
             "    return top_button_container_;\n"
             "  }",
-            "  VerticalPinnedTabContainerView* GetPinnedTabsContainer();\n"
-            "  VerticalUnpinnedTabContainerView* GetUnpinnedTabsContainer();\n\n"
             "  // XPLORER: Arc-style sidebar chrome below the top menu bar.\n"
             "  void InstallXplorerSidebarChrome(\n"
             "      std::unique_ptr<xplorer::XplorerSidebarChromeView> chrome);\n"
@@ -593,14 +617,18 @@ def patch_vertical_sidebar(src: Path):
             "    return top_button_container_;\n"
             "  }",
         )
+    # Restate the anchor as the insertion's FIRST line. edit() only replaces
+    # when the first or last line matches, and anchor.strip() drops the indent
+    # of a one-line anchor, so a last-line match silently fails and the new
+    # member gets glued onto the same line.
     edit(
         vts_h,
-        "  bool tab_strip_editable_for_testing_ = true;\n\n"
         "  raw_ptr<VerticalTabStripTopContainer> top_button_container_ = nullptr;",
-        "  bool tab_strip_editable_for_testing_ = true;\n\n"
+        "  raw_ptr<VerticalTabStripTopContainer> top_button_container_ = nullptr;\n"
         "  raw_ptr<xplorer::XplorerSidebarChromeView> xplorer_sidebar_chrome_ =\n"
         "      nullptr;  // XPLORER\n"
-        "  raw_ptr<VerticalTabStripTopContainer> top_button_container_ = nullptr;",
+        "  raw_ptr<xplorer::XplorerSidebarScheduledView> xplorer_sidebar_scheduled_ =\n"
+        "      nullptr;  // XPLORER",
     )
     # Scheduled-section installer + accessor, mirroring the chrome view.
     if "InstallXplorerSidebarScheduled" not in vts_h.read_text():
@@ -693,14 +721,14 @@ def patch_vertical_sidebar(src: Path):
             vts_cc,
             "  std::optional<size_t> separator_index = GetIndexOf(top_button_separator_);\n"
             "  CHECK(separator_index.has_value());\n"
-            "  ReorderChildView(tab_strip_view_, separator_index.value() + 1);",
+            "  ReorderChildView(tab_strip_view(), separator_index.value() + 1);",
             "  std::optional<size_t> separator_index = GetIndexOf(top_button_separator_);\n"
             "  CHECK(separator_index.has_value());\n"
             "  size_t tab_strip_index = separator_index.value() + 1;\n"
             "  if (xplorer_sidebar_chrome_) {\n"
             "    tab_strip_index = GetIndexOf(xplorer_sidebar_chrome_).value() + 1;\n"
             "  }\n"
-            "  ReorderChildView(tab_strip_view_, tab_strip_index);  // XPLORER",
+            "  ReorderChildView(tab_strip_view(), tab_strip_index);  // XPLORER",
         )
     # InstallXplorerSidebarScheduled: append the "Scheduled" section below the tab
     # list. At install time tab_strip_view_ does not exist yet (the tab strip is
@@ -725,9 +753,9 @@ def patch_vertical_sidebar(src: Path):
             "      views::kFlexBehaviorKey,\n"
             "      views::FlexSpecification(views::MinimumFlexSizeRule::kPreferred,\n"
             "                               views::MaximumFlexSizeRule::kPreferred));\n"
-            "  if (tab_strip_view_) {\n"
+            "  if (tab_strip_view()) {\n"
             "    ReorderChildView(xplorer_sidebar_scheduled_,\n"
-            "                     GetIndexOf(tab_strip_view_).value() + 1);\n"
+            "                     GetIndexOf(tab_strip_view()).value() + 1);\n"
             "  }\n"
             "}\n\n"
             "VerticalTabStripRegionView::~VerticalTabStripRegionView() {",
@@ -740,14 +768,16 @@ def patch_vertical_sidebar(src: Path):
     if "if (xplorer_sidebar_scheduled_) {  // XPLORER" not in vts_cc.read_text():
         edit(
             vts_cc,
-            "  OnCollapseStateChanged(state_controller_->GetCollapseState());\n\n"
-            "  return tab_strip_view_;",
+            "  ReorderChildView(tab_strip_view(), tab_strip_index);  // XPLORER\n\n"
+            "  OnCollapseStateChanged(state_controller_->GetCollapseState());\n"
+            "}",
+            "  ReorderChildView(tab_strip_view(), tab_strip_index);  // XPLORER\n\n"
             "  if (xplorer_sidebar_scheduled_) {  // XPLORER\n"
             "    ReorderChildView(xplorer_sidebar_scheduled_,\n"
-            "                     GetIndexOf(tab_strip_view_).value() + 1);\n"
+            "                     GetIndexOf(tab_strip_view()).value() + 1);\n"
             "  }\n\n"
-            "  OnCollapseStateChanged(state_controller_->GetCollapseState());\n\n"
-            "  return tab_strip_view_;",
+            "  OnCollapseStateChanged(state_controller_->GetCollapseState());\n"
+            "}",
         )
 
     browser_view_h = src / "chrome/browser/ui/views/frame/browser_view.h"
@@ -811,7 +841,7 @@ def patch_vertical_sidebar(src: Path):
         "    {\n"
         "      auto sidebar_chrome =\n"
         "          std::make_unique<xplorer::XplorerSidebarChromeView>(\n"
-        "              browser_.get(), browser_->profile());\n"
+        "              browser_.get(), browser_->GetProfile());\n"
         "      xplorer_sidebar_chrome_ = sidebar_chrome.get();\n"
         "      vertical_tab_strip_region_view_->InstallXplorerSidebarChrome(\n"
         "          std::move(sidebar_chrome));\n"
@@ -859,10 +889,10 @@ def patch_vertical_sidebar(src: Path):
     if "xplorer_sidebar_chrome_view.cc" not in browser_ui_gn.read_text():
         edit(
             browser_ui_gn,
-            '      "views/bookmarks/bookmark_bar_view.cc",\n'
-            '      "views/bookmarks/bookmark_bar_view.h",',
-            '      "views/bookmarks/bookmark_bar_view.cc",\n'
-            '      "views/bookmarks/bookmark_bar_view.h",\n'
+            '      "views/frame/vertical_tab_strip_region_view.cc",\n'
+            '      "views/frame/vertical_tab_strip_region_view.h",',
+            '      "views/frame/vertical_tab_strip_region_view.cc",\n'
+            '      "views/frame/vertical_tab_strip_region_view.h",\n'
             '      "views/xplorer/xplorer_sidebar_chrome_view.cc",  # XPLORER\n'
             '      "views/xplorer/xplorer_sidebar_chrome_view.h",  # XPLORER\n'
             '      "views/xplorer/xplorer_sidebar_row_button.cc",  # XPLORER\n'
@@ -885,6 +915,16 @@ def patch_vertical_sidebar(src: Path):
             '      "views/xplorer/xplorer_scheduled_task_tabs.cc",  # XPLORER\n'
             '      "views/xplorer/xplorer_scheduled_task_tabs.h",  # XPLORER\n',
         )
+
+    # M153 deleted chrome/browser/ui/views/tabs/vertical/vertical_tab_strip_view.h
+    # (and the unpinned-container / group-header siblings). The bookmark-row
+    # hiding and group-header chat button were patched into those classes.
+    # Re-porting them onto views/tabs/common/* is a follow-up; skip so the
+    # security rebuild still applies.
+    if not (src / "chrome/browser/ui/views/tabs/vertical/vertical_tab_strip_view.h").exists():
+        print("  skip (vertical tab strip views moved in M153): "
+              "bookmark-row hiding and group-header chat button")
+        return
 
     # XPLORER: Arc-style bookmark tabs hide their row from the vertical tab list.
     # Hiding is STATEFUL: a tab handle stays in `hidden_rows_` so it can be
@@ -1646,6 +1686,27 @@ def main(src: Path):
         app_info.write_text(ai)
         print(f"  added Sparkle keys: {app_info}")
 
+    # XPLORER: TCC usage descriptions so Screen Recording / Files & Folders
+    # prompts show a proper reason (and can be requested at launch).
+    ai = app_info.read_text()
+    if "NSScreenCaptureUsageDescription" not in ai:
+        privacy_keys = (
+            "\t<key>NSScreenCaptureUsageDescription</key>\n"
+            "\t<string>Xplor needs Screen Recording to capture your screen for Grok — "
+            "region capture from the menu bar, image search, and page screenshots.</string>\n"
+            "\t<key>NSDocumentsFolderUsageDescription</key>\n"
+            "\t<string>Xplor can open documents you share with Grok.</string>\n"
+            "\t<key>NSDesktopFolderUsageDescription</key>\n"
+            "\t<string>Xplor can open files from your Desktop when you share them with Grok.</string>\n"
+            "\t<key>NSDownloadsFolderUsageDescription</key>\n"
+            "\t<string>Xplor can open files from Downloads when you share them with Grok.</string>\n"
+            "\t<key>NSPhotoLibraryUsageDescription</key>\n"
+            "\t<string>Xplor can attach photos you choose for Grok vision and chat.</string>\n"
+        )
+        ai = ai.replace("</dict>\n</plist>", privacy_keys + "</dict>\n</plist>")
+        app_info.write_text(ai)
+        print(f"  added TCC usage descriptions: {app_info}")
+
     # XPLORER: wire the Sparkle auto-updater into browser startup. Add the
     # include next to app_controller_mac.h, and kick off the updater right after
     # the controller marks startup complete in -applicationDidFinishLaunching:.
@@ -1660,7 +1721,7 @@ def main(src: Path):
         t = t.replace(
             "  _startupComplete = YES;\n",
             "  _startupComplete = YES;\n"
-            "  XplorerStartSparkleUpdater();  // XPLORER: Sparkle auto-update\n",
+            "  XplorerStartSparkleUpdater();  // XPLORER: Sparkle auto-update\n"
         )
         app_controller.write_text(t)
         print(f"  edited: {app_controller}")
@@ -1817,46 +1878,52 @@ def main(src: Path):
     )
 
     # AI Mode omnibox chip -> open native Grok Search page (not Google AI Mode).
+    # M151 had a dedicated icon view. M153 folded that into the page-action
+    # framework (click still lands in AiModePageActionController::OpenAiMode),
+    # so these edits only apply when the old file is present.
     ai_mode_icon = src / "chrome/browser/ui/views/location_bar/ai_mode_page_action_icon_view.cc"
-    edit(
-        ai_mode_icon,
-        'void AiModePageActionIconView::OnExecuting(\n'
-        '    PageActionIconView::ExecuteSource source) {\n'
-        '  OmniboxController* omnibox_controller =\n'
-        '      search::GetOmniboxController(GetWebContents());\n'
-        '  CHECK(omnibox_controller);\n'
-        '  omnibox::AiModePageActionController::OpenAiMode(*omnibox_controller,\n'
-        '                                                  /*via_keyboard=*/false);\n'
-        '}',
-        'void AiModePageActionIconView::OnExecuting(\n'
-        '    PageActionIconView::ExecuteSource source) {\n'
-        '  // XPLORER: Grok chip opens native Grok Search.\n'
-        '  grok_companion::OpenGrokSearchPage(browser_);\n'
-        '}',
-    )
-    edit(
-        ai_mode_icon,
-        '    omnibox::AiModePageActionController::OpenAiMode(*omnibox_controller,\n'
-        '                                                    /*via_keyboard=*/true);\n'
-        '    return true;',
-        '    grok_companion::OpenGrokSearchPage(browser_);\n'
-        '    return true;',
-    )
-    edit(
-        ai_mode_icon,
-        '  SetUseTonalColorsWhenExpanded(true);\n'
-        '  SetBackgroundVisibility(BackgroundVisibility::kWithLabel);\n'
-        '}',
-        '  SetUseTonalColorsWhenExpanded(true);\n'
-        '  SetBackgroundVisibility(BackgroundVisibility::kWithLabel);\n'
-        '  SetTooltipText(u"Open Grok Search");\n'
-        '}',
-    )
-    edit(
-        ai_mode_icon,
-        '#include "chrome/browser/ui/views/page_action/page_action_icon_view.h"',
-        '\n#include "chrome/browser/grok_companion/grok_companion_util.h"  // XPLORER\n',
-    )
+    if ai_mode_icon.exists():
+        edit(
+            ai_mode_icon,
+            'void AiModePageActionIconView::OnExecuting(\n'
+            '    PageActionIconView::ExecuteSource source) {\n'
+            '  OmniboxController* omnibox_controller =\n'
+            '      search::GetOmniboxController(GetWebContents());\n'
+            '  CHECK(omnibox_controller);\n'
+            '  omnibox::AiModePageActionController::OpenAiMode(*omnibox_controller,\n'
+            '                                                  /*via_keyboard=*/false);\n'
+            '}',
+            'void AiModePageActionIconView::OnExecuting(\n'
+            '    PageActionIconView::ExecuteSource source) {\n'
+            '  // XPLORER: Grok chip opens native Grok Search.\n'
+            '  grok_companion::OpenGrokSearchPage(browser_);\n'
+            '}',
+        )
+        edit(
+            ai_mode_icon,
+            '    omnibox::AiModePageActionController::OpenAiMode(*omnibox_controller,\n'
+            '                                                    /*via_keyboard=*/true);\n'
+            '    return true;',
+            '    grok_companion::OpenGrokSearchPage(browser_);\n'
+            '    return true;',
+        )
+        edit(
+            ai_mode_icon,
+            '  SetUseTonalColorsWhenExpanded(true);\n'
+            '  SetBackgroundVisibility(BackgroundVisibility::kWithLabel);\n'
+            '}',
+            '  SetUseTonalColorsWhenExpanded(true);\n'
+            '  SetBackgroundVisibility(BackgroundVisibility::kWithLabel);\n'
+            '  SetTooltipText(u"Open Grok Search");\n'
+            '}',
+        )
+        edit(
+            ai_mode_icon,
+            '#include "chrome/browser/ui/views/page_action/page_action_icon_view.h"',
+            '\n#include "chrome/browser/grok_companion/grok_companion_util.h"  // XPLORER\n',
+        )
+    else:
+        print(f"  skip (removed upstream): {ai_mode_icon.name}")
     # Redirect OpenAiMode (command callback) to Grok Search.
     ai_mode_ctrl = src / "chrome/browser/ui/omnibox/ai_mode_page_action_controller.cc"
     edit(
@@ -1864,8 +1931,9 @@ def main(src: Path):
         'void AiModePageActionController::OpenAiMode(\n'
         '    OmniboxController& omnibox_controller,\n'
         '    bool via_keyboard) {\n'
-        '  omnibox_controller.edit_model()->OpenAiMode(via_keyboard,\n'
-        '                                              /*via_context_menu=*/false);\n'
+        '  omnibox_controller.edit_model()->OpenAiMode(\n'
+        '      via_keyboard ? OmniboxEditModel::AimActivation::kKeyboard\n'
+        '                   : OmniboxEditModel::AimActivation::kClickOrGesture);\n'
         '}',
         'void AiModePageActionController::OpenAiMode(\n'
         '    OmniboxController& omnibox_controller,\n'
@@ -1893,10 +1961,10 @@ def main(src: Path):
         ai_mode_ctrl,
         'bool AiModePageActionController::ShouldShowPageAction(\n'
         '    Profile* profile,\n'
-        '    LocationBarView& location_bar_view) {',
+        '    LocationBar& location_bar) {',
         'bool AiModePageActionController::ShouldShowPageAction(\n'
         '    Profile* profile,\n'
-        '    LocationBarView& location_bar_view) {\n'
+        '    LocationBar& location_bar) {\n'
         '  // XPLORER: always show Grok entrypoint in Xplorer.\n'
         '  if (profile && profile->IsRegularProfile()) {\n'
         '    return true;\n'
@@ -1915,13 +1983,11 @@ def main(src: Path):
     )
     edit(
         browser_features,
-        '  // TODO(crbug.com/346148093): Move SidePanelCoordinator construction to\n'
-        '  // Init.',
+        '  // TODO(crbug.com/346148093): Move SidePanelCoordinator construction to Init.',
         '  // XPLORER: grok.com/grokipedia toolbar before side panel init (NTP race).\n'
         '  grok_companion::RegisterGrokWebBar(browser);\n'
         '  grok_companion::RegisterGrokFab(browser);\n\n'
-        '  // TODO(crbug.com/346148093): Move SidePanelCoordinator construction to\n'
-        '  // Init.',
+        '  // TODO(crbug.com/346148093): Move SidePanelCoordinator construction to Init.',
     )
 
     # Register Grok side panel in global entries.
@@ -1954,25 +2020,31 @@ def main(src: Path):
     # makes the rest of the function unreachable, which fails -Werror.
 
     # New tabs must navigate to the Grok home URL directly — not chrome://newtab
-    # (injectors only run on http/https pages).
-    browser_cc = src / "chrome/browser/ui/browser.cc"
+    # (injectors only run on http/https pages). M153 moved this out of
+    # Browser::GetNewTabURL into chrome::GetNewTabURL (browser_tabstrip.cc).
+    tabstrip_cc = src / "chrome/browser/ui/browser_tabstrip.cc"
     edit(
-        browser_cc,
-        '#include "chrome/browser/ui/browser.h"',
-        '\n#include "chrome/browser/grok_companion/grok_companion_util.h"  // XPLORER\n',
+        tabstrip_cc,
+        '#include "chrome/browser/ui/browser_tabstrip.h"',
+        '#include "chrome/browser/ui/browser_tabstrip.h"\n'
+        '#include "chrome/browser/grok_companion/grok_companion_util.h"  // XPLORER\n',
     )
     edit(
-        browser_cc,
-        'GURL Browser::GetNewTabURL() const {\n'
-        '  if (auto* const app_browser_controller =\n'
-        '          web_app::AppBrowserController::From(this)) {\n'
-        '    return app_browser_controller->GetAppNewTabUrl();\n'
+        tabstrip_cc,
+        'GURL GetNewTabURL(const BrowserWindowInterface* browser) {\n'
+        '  if (browser) {\n'
+        '    if (auto* const app_browser_controller =\n'
+        '            web_app::AppBrowserController::From(browser)) {\n'
+        '      return app_browser_controller->GetAppNewTabUrl();\n'
+        '    }\n'
         '  }\n'
-        '  return chrome::ChromeUINewTabURLAsGURL();\n}',
-        'GURL Browser::GetNewTabURL() const {\n'
-        '  if (auto* const app_browser_controller =\n'
-        '          web_app::AppBrowserController::From(this)) {\n'
-        '    return app_browser_controller->GetAppNewTabUrl();\n'
+        '  return ChromeUINewTabURLAsGURL();\n}',
+        'GURL GetNewTabURL(const BrowserWindowInterface* browser) {\n'
+        '  if (browser) {\n'
+        '    if (auto* const app_browser_controller =\n'
+        '            web_app::AppBrowserController::From(browser)) {\n'
+        '      return app_browser_controller->GetAppNewTabUrl();\n'
+        '    }\n'
         '  }\n'
         '  // XPLORER: open Grok home directly so page injectors can attach.\n'
         '  return grok_companion::GetStartupHomeURL();\n}',
@@ -2050,9 +2122,9 @@ def main(src: Path):
     edit(
         tabs_features,
         "BASE_FEATURE(kVerticalTabs, base::FEATURE_DISABLED_BY_DEFAULT);\n\n"
-        "BASE_FEATURE(kVerticalTabsLaunch, base::FEATURE_DISABLED_BY_DEFAULT);",
+        "BASE_FEATURE(kVerticalTabsLaunch, base::FEATURE_ENABLED_BY_DEFAULT);",
         "BASE_FEATURE(kVerticalTabs, base::FEATURE_ENABLED_BY_DEFAULT);\n\n"
-        "BASE_FEATURE(kVerticalTabsLaunch, base::FEATURE_DISABLED_BY_DEFAULT);",
+        "BASE_FEATURE(kVerticalTabsLaunch, base::FEATURE_ENABLED_BY_DEFAULT);",
     )
     edit(
         tabs_features,
@@ -2064,12 +2136,12 @@ def main(src: Path):
     tab_strip_prefs = src / "chrome/browser/ui/tabs/tab_strip_prefs.cc"
     edit(
         tab_strip_prefs,
-        "  registry->RegisterBooleanPref(prefs::kEverythingMenuPinnedToTabstrip,"
-        " true);\n"
-        "  registry->RegisterBooleanPref(prefs::kVerticalTabsEnabled, false);",
-        "  registry->RegisterBooleanPref(prefs::kEverythingMenuPinnedToTabstrip,"
-        " true);\n"
-        "  registry->RegisterBooleanPref(prefs::kVerticalTabsEnabled, true);",
+        "  registry->RegisterBooleanPref(prefs::kVerticalTabsEnabled, false);\n"
+        "  registry->RegisterBooleanPref(\n"
+        "      prefs::kVerticalTabsExpandOnHoverEnabled,",
+        "  registry->RegisterBooleanPref(prefs::kVerticalTabsEnabled, true);\n"
+        "  registry->RegisterBooleanPref(\n"
+        "      prefs::kVerticalTabsExpandOnHoverEnabled,",
     )
 
     # Rename "AI Mode" label to "Grok" in the omnibox chip.
@@ -2331,7 +2403,7 @@ def main(src: Path):
     # (Developer Build) ..."). Prepend the Xplorer product version so users see
     # OUR version first. NOTE: bump XPLORER_VERSION here per release (or wire it
     # to the release version later).
-    XPLORER_VERSION = "0.8.12"
+    XPLORER_VERSION = "0.8.14"
     ss = src / "chrome/app/settings_strings.grdp"
     sst = ss.read_text()
     # Insert "· Xplor" (not "· Chromium"): the broad grd rebrand replaces
@@ -2609,7 +2681,7 @@ def main(src: Path):
     # help page. Repoint it to the Xplorer releases page so it links to our
     # download, not Google. (The other two learn-more links in about_page.html are
     # obsolete-OS and branded-only macOS promote — not shown in our build.)
-    about_page = src / "chrome/browser/resources/settings/about_page/about_page.html"
+    about_page = src / "chrome/browser/resources/settings/about_page/about_page.html.ts"
     if about_page.exists():
         ap = about_page.read_text()
         if "github.com/daniel-farina/xplorer/releases/latest" not in ap:
@@ -2742,6 +2814,7 @@ def main(src: Path):
     # Arc-style vertical sidebar: "Tabs" section label + agent tab group.
     patch_vertical_sidebar(src)
     patch_soft_tab_pills(src)
+    patch_sidebar_plane(src)
     patch_quiet_new_tab_row(src)
     patch_hover_close(src)
     patch_quiet_tab_type(src)
