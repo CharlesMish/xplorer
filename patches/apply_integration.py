@@ -183,6 +183,117 @@ def patch_xplorer_settings_access(src: Path):
     )
 
 
+def patch_soft_tab_pills(src: Path):
+    """Arc/Dia: vertical tab rows paint as soft inset pills, not Chrome cards."""
+    path = src / "chrome/browser/ui/views/tabs/vertical_tab_style_views.cc"
+    text = path.read_text()
+    if "XPLORER: Arc soft pill" in text:
+        print(f"  skip (already applied): {path}")
+        return
+
+    def swap(old: str, new: str, label: str):
+        nonlocal text
+        if old not in text:
+            sys.exit(f"ANCHOR NOT FOUND in {path} ({label})")
+        text = text.replace(old, new, 1)
+
+    swap(
+        '#include "chrome/browser/ui/layout_constants.h"\n',
+        '#include "chrome/browser/ui/color/chrome_color_id.h"  // XPLORER\n'
+        '#include "chrome/browser/ui/layout_constants.h"\n',
+        "layout_constants include",
+    )
+    swap(
+        '#include "ui/gfx/canvas.h"\n',
+        '#include "ui/gfx/canvas.h"\n'
+        '#include "ui/gfx/color_utils.h"  // XPLORER\n',
+        "canvas include",
+    )
+    swap(
+        "  if (flags.render_units == TabStyle::RenderUnits::kPixels) {\n"
+        "    bounds.Scale(scale);\n"
+        "  }\n"
+        "  const SkScalar scaled_corner_radius =\n",
+        "  if (flags.render_units == TabStyle::RenderUnits::kPixels) {\n"
+        "    bounds.Scale(scale);\n"
+        "  }\n"
+        "  // XPLORER: Arc soft pill — float the fill inside the row so tabs don't\n"
+        "  // read as stacked Chrome cards. Pinned squares stay full-bleed.\n"
+        "  if (!delegate_->IsPinned()) {\n"
+        "    const float inset_scale =\n"
+        "        flags.render_units == TabStyle::RenderUnits::kPixels ? scale : 1.f;\n"
+        "    bounds.Inset(gfx::InsetsF::VH(2.f * inset_scale, 2.f * inset_scale));\n"
+        "  }\n"
+        "  const SkScalar scaled_corner_radius =\n",
+        "GetPath bounds",
+    )
+    swap(
+        "SkColor VerticalTabStyleViews::GetCurrentTabBackgroundColor(\n"
+        "    TabStyle::TabSelectionState selection_state) const {\n"
+        "  const bool frame_glass = delegate_->IsGlassFrame();\n"
+        "  return tab_style()->GetCurrentTabBackgroundColor(\n"
+        "      selection_state, delegate_->IsHoverAnimationActive(),\n"
+        "      delegate_->GetHoverAnimationValue(),\n"
+        "      delegate_->GetView()->GetWidget()\n"
+        "          ? delegate_->GetView()->GetWidget()->ShouldPaintAsActive()\n"
+        "          : true,\n"
+        "      frame_glass, delegate_->GetView()->GetColorProvider());\n"
+        "}\n",
+        "SkColor VerticalTabStyleViews::GetCurrentTabBackgroundColor(\n"
+        "    TabStyle::TabSelectionState selection_state) const {\n"
+        "  // XPLORER: Arc soft pill. A solid active card (kColorSysBase) fights the\n"
+        "  // sidebar. Paint a quiet ink wash over the sidebar instead.\n"
+        "  const ui::ColorProvider* colors = delegate_->GetView()->GetColorProvider();\n"
+        "  const bool frame_active = delegate_->GetView()->GetWidget()\n"
+        "                                ? delegate_->GetView()->GetWidget()\n"
+        "                                      ->ShouldPaintAsActive()\n"
+        "                                : true;\n"
+        "  if (!colors) {\n"
+        "    return tab_style()->GetCurrentTabBackgroundColor(\n"
+        "        selection_state, delegate_->IsHoverAnimationActive(),\n"
+        "        delegate_->GetHoverAnimationValue(), frame_active,\n"
+        "        delegate_->IsGlassFrame(), nullptr);\n"
+        "  }\n"
+        "  const SkColor sidebar = colors->GetColor(\n"
+        "      frame_active ? kColorTabBackgroundInactiveFrameActive\n"
+        "                   : kColorTabBackgroundInactiveFrameInactive);\n"
+        "  const bool dark = color_utils::GetRelativeLuminance(sidebar) < 0.4f;\n"
+        "  const SkColor ink = dark ? SK_ColorWHITE : SK_ColorBLACK;\n"
+        "  float rest = 0.f;\n"
+        "  float hover = dark ? 0.08f : 0.045f;\n"
+        "  if (selection_state == TabStyle::TabSelectionState::kActive) {\n"
+        "    rest = dark ? 0.16f : 0.09f;\n"
+        "    hover = dark ? 0.22f : 0.13f;\n"
+        "  } else if (selection_state == TabStyle::TabSelectionState::kSelected) {\n"
+        "    rest = dark ? 0.11f : 0.06f;\n"
+        "    hover = dark ? 0.16f : 0.09f;\n"
+        "  }\n"
+        "  const float t = delegate_->IsHoverAnimationActive()\n"
+        "                      ? static_cast<float>(delegate_->GetHoverAnimationValue())\n"
+        "                      : 0.f;\n"
+        "  return color_utils::AlphaBlend(ink, sidebar, rest + (hover - rest) * t);\n"
+        "}\n",
+        "GetCurrentTabBackgroundColor",
+    )
+    swap(
+        "SkScalar VerticalTabStyleViews::GetCornerRadius() const {\n"
+        "  return SkIntToScalar(\n"
+        "      GetLayoutConstant(LayoutConstant::kVerticalTabCornerRadius) +\n"
+        "      (delegate_->IsSplit() ? delegate_->GetView()->GetInsets().height() : 0));\n"
+        "}\n",
+        "SkScalar VerticalTabStyleViews::GetCornerRadius() const {\n"
+        "  // XPLORER: Arc soft pill. Chrome's 8dp card corner stays boxy once the\n"
+        "  // fill is inset; 12dp reads as a pill on the shorter row.\n"
+        "  return SkIntToScalar(\n"
+        "      12 +\n"
+        "      (delegate_->IsSplit() ? delegate_->GetView()->GetInsets().height() : 0));\n"
+        "}\n",
+        "GetCornerRadius",
+    )
+    path.write_text(text)
+    print(f"  edited: {path}")
+
+
 def patch_vertical_sidebar(src: Path):
     """Arc-style sidebar chrome in the vertical tab strip.
 
@@ -2383,6 +2494,7 @@ def main(src: Path):
 
     # Arc-style vertical sidebar: "Tabs" section label + agent tab group.
     patch_vertical_sidebar(src)
+    patch_soft_tab_pills(src)
 
     patch_xplorer_settings_access(src)
 
