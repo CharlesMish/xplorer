@@ -314,6 +314,32 @@ def patch_hide_top_toolbar(src: Path):
     print(f"  edited: {path}")
 
 
+def patch_skip_crashed_session_bubble(src: Path):
+    """Hidden toolbar has no app-menu anchor. Showing the bubble aborts."""
+    path = src / "chrome/browser/ui/views/session_crashed_bubble_view.cc"
+    text = path.read_text()
+    if "XPLORER: no app menu to anchor the restore bubble" in text:
+        print(f"  skip (already applied): {path.name}")
+        return
+    old = (
+        "  auto* control = browser_view->toolbar_button_provider()->GetAppMenuControl();\n"
+        "  views::BubbleAnchor anchor =\n"
+        "      control ? control->GetAnchor() : views::BubbleAnchor();\n"
+    )
+    new = (
+        "  auto* control = browser_view->toolbar_button_provider()->GetAppMenuControl();\n"
+        "  // XPLORER: no app menu to anchor the restore bubble.\n"
+        "  if (!control || !control->IsDrawn()) {\n"
+        "    return nullptr;\n"
+        "  }\n"
+        "  views::BubbleAnchor anchor = control->GetAnchor();\n"
+    )
+    if old not in text:
+        sys.exit(f"ANCHOR NOT FOUND in {path} (session crashed bubble)")
+    path.write_text(text.replace(old, new, 1))
+    print(f"  edited: {path}")
+
+
 def patch_sidebar_location_focus(src: Path):
     """Cmd-L focuses the sidebar field once the top toolbar is hidden."""
     view = src / "chrome/browser/ui/views/frame/browser_view.cc"
@@ -3984,6 +4010,7 @@ def main(src: Path):
     patch_soft_tab_pills(src)
     patch_sidebar_plane(src)
     patch_hide_top_toolbar(src)
+    patch_skip_crashed_session_bubble(src)
     patch_sidebar_location_focus(src)
     patch_enable_glass_frame(src)
     patch_quiet_new_tab_row(src)
