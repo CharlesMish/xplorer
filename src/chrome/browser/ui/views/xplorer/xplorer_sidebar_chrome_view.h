@@ -10,6 +10,7 @@
 #include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/views/controls/textfield/textfield_controller.h"
 #include "ui/views/view.h"
+#include "ui/views/widget/widget_observer.h"
 #include "url/gurl.h"
 
 class BrowserWindowInterface;
@@ -29,6 +30,7 @@ namespace xplorer {
 // vertical tabs are on, so this field is the location bar.
 class XplorerSidebarChromeView : public views::View,
                                   public views::TextfieldController,
+                                  public views::WidgetObserver,
                                   public TabStripModelObserver {
   METADATA_HEADER(XplorerSidebarChromeView, views::View)
 
@@ -39,8 +41,9 @@ class XplorerSidebarChromeView : public views::View,
       delete;
   ~XplorerSidebarChromeView() override;
 
-  // Cmd-L / Ctrl-L. Selects the current text so typing replaces it.
-  void FocusUrlField();
+  // Cmd-L opens the URL popup. Startup focus must not, or the popup
+  // sticks open on chrome://newtab.
+  void FocusUrlField(bool user_initiated);
   void OnUrlFieldBlur();
 
   // views::TextfieldController:
@@ -48,6 +51,10 @@ class XplorerSidebarChromeView : public views::View,
                       const ui::KeyEvent& key_event) override;
   bool HandleMouseEvent(views::Textfield* sender,
                         const ui::MouseEvent& mouse_event) override;
+
+  // views::WidgetObserver:
+  void OnWidgetActivationChanged(views::Widget* widget, bool active) override;
+  void OnWidgetDestroying(views::Widget* widget) override;
 
   // TabStripModelObserver:
   void OnTabStripModelChanged(

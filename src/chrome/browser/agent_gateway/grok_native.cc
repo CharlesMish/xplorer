@@ -860,6 +860,57 @@ std::string ExtractGrokAuthUrl(const std::string& text) {
   return {};
 }
 
+// The Grok CLI opens the system default browser (often Chrome) itself.
+// That second window consumes the same sign-in link, so Allow lands back
+// on the login page. Close those foreign tabs; Xplor keeps the only one.
+void CloseForeignAuthTabsOnce() {
+#if BUILDFLAG(IS_MAC)
+  const char* script =
+      "on closeAuth(appName)\n"
+      "  tell application \"System Events\"\n"
+      "    if appName is not in (name of processes) then return\n"
+      "  end tell\n"
+      "  try\n"
+      "    tell application appName\n"
+      "      repeat with w in windows\n"
+      "        set i to (count of tabs of w)\n"
+      "        repeat while i > 0\n"
+      "          try\n"
+      "            set u to URL of tab i of w\n"
+      "            if u contains \"accounts.x.ai\" or u contains \"auth.x.ai\" then\n"
+      "              close tab i of w\n"
+      "            end if\n"
+      "          end try\n"
+      "          set i to i - 1\n"
+      "        end repeat\n"
+      "      end repeat\n"
+      "    end tell\n"
+      "  end try\n"
+      "end closeAuth\n"
+      "closeAuth(\"Google Chrome\")\n"
+      "closeAuth(\"Safari\")\n"
+      "closeAuth(\"Microsoft Edge\")\n"
+      "closeAuth(\"Brave Browser\")\n"
+      "closeAuth(\"Arc\")\n";
+  base::CommandLine cmd(base::FilePath("/usr/bin/osascript"));
+  cmd.AppendArg("-e");
+  cmd.AppendArg(script);
+  base::LaunchOptions options;
+  base::LaunchProcess(cmd, options);
+#endif
+}
+
+void CloseForeignAuthTabsSoon() {
+  base::ThreadPool::PostTask(
+      FROM_HERE, {base::TaskPriority::USER_VISIBLE, base::MayBlock()},
+      base::BindOnce([] {
+        for (int i = 0; i < 8; ++i) {
+          CloseForeignAuthTabsOnce();
+          base::PlatformThread::Sleep(base::Milliseconds(400));
+        }
+      }));
+}
+
 void OpenUrlInXplorTab(const std::string& url) {
   if (url.empty())
     return;
@@ -1158,6 +1209,7 @@ void RunGrokLoginOAuthWorker() {
               }
               if (open_tab)
                 OpenUrlInXplorTab(url);
+              CloseForeignAuthTabsSoon();
               opened_tab = true;
             }
           }
@@ -1210,6 +1262,7 @@ void RunGrokLoginOAuthWorker() {
       }
       if (open_tab)
         OpenUrlInXplorTab(url);
+      CloseForeignAuthTabsSoon();
     }
   }
 
@@ -1233,8 +1286,10 @@ void RunGrokLoginOAuthWorker() {
       LoginState().message.clear();
     }
   }
-  if (welcome_flow || ok)
-    ReturnToOnboardingStep(ok ? "import" : "account");
+  // A saved token is success even if the CLI's exit code is odd because
+  // Chrome also opened the link. Don't send the user back to sign-in.
+  if (welcome_flow || saved)
+    ReturnToOnboardingStep(saved ? "import" : "account");
 }
 
 // Remove the signed-in OAuth account from ~/.grok/auth.json. Leaves any

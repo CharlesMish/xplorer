@@ -85,12 +85,25 @@ std::u16string DisplayUrl(const GURL& url) {
       url);
 }
 
-std::u16string FullUrl(const GURL& url) {
-  if (!url.is_valid())
+bool IsInternalPage(const GURL& url) {
+  if (!url.is_valid() || url.IsAboutBlank() ||
+      grok_companion::IsGrokHomeURL(url) ||
+      url.SchemeIs(content::kChromeUIScheme) ||
+      url.SchemeIs(content::kChromeUIUntrustedScheme)) {
+    return true;
+  }
+  return url.SchemeIsHTTPOrHTTPS() &&
+         (url.host() == "127.0.0.1" || url.host() == "localhost") &&
+         (url.path() == "/welcome" || url.path() == "/search");
+}
+
+std::u16string EditableUrl(const GURL& url) {
+  if (IsInternalPage(url))
     return {};
   return url_formatter::FormatUrl(
-      url, url_formatter::kFormatUrlOmitNothing, base::UnescapeRule::NONE,
-      nullptr, nullptr, nullptr);
+      url,
+      url_formatter::kFormatUrlOmitDefaults | url_formatter::kFormatUrlOmitHTTPS,
+      base::UnescapeRule::SPACES, nullptr, nullptr, nullptr);
 }
 
 class XplorerSpaceSwatch : public views::View {
@@ -254,12 +267,14 @@ XplorerSidebarChromeView::XplorerSidebarChromeView(
 }
 
 XplorerSidebarChromeView::~XplorerSidebarChromeView() {
+  CloseUrlPopup();
   if (observing_tabs_ && browser_ && browser_->GetTabStripModel())
     browser_->GetTabStripModel()->RemoveObserver(this);
 }
 
-void XplorerSidebarChromeView::FocusUrlField() {
-  ShowUrlPopup();
+void XplorerSidebarChromeView::FocusUrlField(bool user_initiated) {
+  if (user_initiated)
+    ShowUrlPopup();
 }
 
 void XplorerSidebarChromeView::OnUrlFieldBlur() {
@@ -269,7 +284,9 @@ void XplorerSidebarChromeView::OnUrlFieldBlur() {
 bool XplorerSidebarChromeView::HandleKeyEvent(
     views::Textfield* sender,
     const ui::KeyEvent& key_event) {
-  if (sender != url_field_ || key_event.type() != ui::EventType::kKeyPressed)
+  if (key_event.type() != ui::EventType::kKeyPressed)
+    return false;
+  if (sender != url_field_ && sender != popup_field_)
     return false;
   if (key_event.key_code() == ui::VKEY_RETURN) {
     if (sender == popup_field_ && popup_field_)
@@ -280,9 +297,8 @@ bool XplorerSidebarChromeView::HandleKeyEvent(
     return true;
   }
   if (key_event.key_code() == ui::VKEY_ESCAPE) {
+    CloseUrlPopup();
     UpdateUrlField();
-    if (auto* focus = url_field_->GetFocusManager())
-      focus->ClearFocus();
     return true;
   }
   return false;
@@ -339,7 +355,21 @@ void XplorerSidebarChromeView::CloseUrlPopup() {
   popup_field_ = nullptr;
   if (views::Widget* popup = url_popup_) {
     url_popup_ = nullptr;
+    popup->RemoveObserver(this);
     popup->Close();
+  }
+}
+
+void XplorerSidebarChromeView::OnWidgetActivationChanged(views::Widget* widget,
+                                                         bool active) {
+  if (widget == url_popup_ && !active)
+    CloseUrlPopup();
+}
+
+void XplorerSidebarChromeView::OnWidgetDestroying(views::Widget* widget) {
+  if (widget == url_popup_) {
+    url_popup_ = nullptr;
+    popup_field_ = nullptr;
   }
 }
 
@@ -355,24 +385,26 @@ void XplorerSidebarChromeView::ShowUrlPopup() {
   params.shadow_type = views::Widget::InitParams::ShadowType::kDrop;
   params.parent = url_field_->GetWidget()->GetNativeView();
   const gfx::Rect anchor = url_field_->GetBoundsInScreen();
-  params.bounds = gfx::Rect(anchor.x(), anchor.bottom() + 6,
-                            std::max(anchor.width(), 420), 52);
+  params.bounds = gfx::Rect(anchor.x(), anchor.bottom() + 4, anchor.width(), 40);
   widget->Init(std::move(params));
+  widget->AddObserver(this);
 
+  SkColor bg = SkColorSetRGB(0xF3, 0xF4, 0xF6);
+  if (const auto* colors = url_field_->GetColorProvider())
+    bg = colors->GetColor(ui::kColorSysHeader);
   auto contents = std::make_unique<views::View>();
-  contents->SetBackground(
-      views::CreateRoundedRectBackground(ui::kColorSysSurface3, 12.f));
+  contents->SetBackground(views::CreateRoundedRectBackground(bg, 10.f));
   auto* layout = contents->SetLayoutManager(std::make_unique<views::BoxLayout>(
       views::BoxLayout::Orientation::kHorizontal, gfx::Insets::VH(8, 12)));
   auto* field = contents->AddChildView(std::make_unique<views::Textfield>());
   popup_field_ = field;
   field->SetController(this);
   field->SetBorder(views::CreateEmptyBorder(gfx::Insets()));
-  field->SetBackgroundColor(SK_ColorTRANSPARENT);
+  field->SetBackgroundColor(bg);
   field->SetTextColorId(ui::kColorSysOnSurface);
   field->SetPlaceholderText(u"Search or Enter URL");
   field->SetAccessibleName(u"Search or Enter URL");
-  field->SetText(FullUrl(full_url_));
+  field->SetText(EditableUrl(full_url_));
   layout->SetFlexForView(field, 1);
   widget->SetContentsView(std::move(contents));
   widget->Show();
@@ -384,7 +416,7 @@ void XplorerSidebarChromeView::ShowUrlPopup() {
 }
 
 void XplorerSidebarChromeView::NavigateFromField() {
-  NavigateFromText(FullUrl(full_url_));
+  NavigateFromText(EditableUrl(full_url_));
 }
 
 void XplorerSidebarChromeView::NavigateFromText(const std::u16string& text) {

@@ -93,7 +93,8 @@ async function startGrokLogin() {
         return;
       }
       if (status.url) {
-        // Same tab, same browser. Native code returns here after the callback.
+        // Same tab, this browser only. The CLI also tries to open Chrome;
+        // native code closes that extra window.
         location.assign(status.url);
         return;
       }

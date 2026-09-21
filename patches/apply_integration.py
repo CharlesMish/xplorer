@@ -357,7 +357,7 @@ def patch_sidebar_location_focus(src: Path):
             "#endif\n"
             "  // XPLORER: address field lives in the sidebar.\n"
             "  if (xplorer_sidebar_chrome_) {\n"
-            "    xplorer_sidebar_chrome_->FocusUrlField();\n"
+            "    xplorer_sidebar_chrome_->FocusUrlField(is_user_initiated);\n"
             "    return;\n"
             "  }\n"
             "  if (!IsLocationBarVisible()) {\n"
