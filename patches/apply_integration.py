@@ -569,6 +569,178 @@ def patch_quiet_tab_type(src: Path):
         print(f"  skip (already applied): {view}")
 
 
+def patch_favorites_density(src: Path):
+    """Arc/Dia: vertical tabs are a short favorites list, not a Chrome grid."""
+    constants = src / "chrome/browser/ui/layout_constants.cc"
+    ctext = constants.read_text()
+    if "XPLORER: favorites density" in ctext:
+        print(f"  skip (already applied): {constants}")
+    else:
+        old = (
+            "    case LayoutConstant::kVerticalTabHeight:\n"
+            "      return 30;\n"
+            "    case LayoutConstant::kVerticalTabPinnedHeight:\n"
+            "      return 32;\n"
+        )
+        new = (
+            "    case LayoutConstant::kVerticalTabHeight:\n"
+            "      // XPLORER: favorites density. Arc rows are shorter than\n"
+            "      // Chrome's vertical tabs.\n"
+            "      return 26;\n"
+            "    case LayoutConstant::kVerticalTabPinnedHeight:\n"
+            "      return 26;\n"
+        )
+        if old not in ctext:
+            sys.exit(f"ANCHOR NOT FOUND in {constants} (tab height)")
+        ctext = ctext.replace(old, new, 1)
+        old = (
+            "    case LayoutConstant::kVerticalTabStripHorizontalPadding:\n"
+            "      return 12;\n"
+        )
+        new = (
+            "    case LayoutConstant::kVerticalTabStripHorizontalPadding:\n"
+            "      // XPLORER: favorites density. Less side chrome.\n"
+            "      return 8;\n"
+        )
+        if old not in ctext:
+            sys.exit(f"ANCHOR NOT FOUND in {constants} (horizontal padding)")
+        constants.write_text(ctext.replace(old, new, 1))
+        print(f"  edited: {constants}")
+
+    style = src / "chrome/browser/ui/views/tabs/vertical_tab_style_views.cc"
+    stext = style.read_text()
+    if "XPLORER: favorites density" in stext:
+        print(f"  skip (already applied): {style}")
+    else:
+        old = (
+            "  // XPLORER: Arc soft pill — float the fill inside the row so tabs don't\n"
+            "  // read as stacked Chrome cards. Pinned squares stay full-bleed.\n"
+            "  if (!delegate_->IsPinned()) {\n"
+        )
+        new = (
+            "  // XPLORER: Arc soft pill — float the fill inside the row so tabs don't\n"
+            "  // read as stacked Chrome cards. Collapsed pinned squares stay\n"
+            "  // full-bleed; a wide favorites row insets like the other pills.\n"
+            "  // XPLORER: favorites density.\n"
+            "  const bool wide_row = bounds.width() > bounds.height() * 1.5f;\n"
+            "  if (!delegate_->IsPinned() || wide_row) {\n"
+        )
+        if old not in stext:
+            sys.exit(f"ANCHOR NOT FOUND in {style} (pill inset)")
+        stext = stext.replace(old, new, 1)
+        old = (
+            "gfx::Insets VerticalTabStyleViews::GetContentsInsets() const {\n"
+            "  return gfx::Insets::VH(\n"
+            "      GetLayoutConstant(LayoutConstant::kTabVerticalPadding),\n"
+            "      GetLayoutConstant(LayoutConstant::kTabHorizontalPadding));\n"
+            "}\n"
+        )
+        new = (
+            "gfx::Insets VerticalTabStyleViews::GetContentsInsets() const {\n"
+            "  // XPLORER: favorites density. Shared tab insets are 6px, sized\n"
+            "  // for horizontal tabs. A 26px sidebar row only needs a hair.\n"
+            "  return gfx::Insets::VH(\n"
+            "      2,\n"
+            "      GetLayoutConstant(LayoutConstant::kTabHorizontalPadding));\n"
+            "}\n"
+        )
+        if old not in stext:
+            sys.exit(f"ANCHOR NOT FOUND in {style} (contents insets)")
+        style.write_text(stext.replace(old, new, 1))
+        print(f"  edited: {style}")
+
+    pinned = src / "chrome/browser/ui/views/tabs/common/pinned_tab_container_view.cc"
+    ptext = pinned.read_text()
+    if "XPLORER: favorites density" in ptext:
+        print(f"  skip (already applied): {pinned}")
+    else:
+        old = (
+            "    auto collapse_state = GetTabStripCollapseState();\n"
+            "\n"
+            "    // Apply horizontal padding immediately at start of collapse animation by\n"
+            "    // including collapsing state.\n"
+            "    int available_width =\n"
+            "        size_bounds.width().value() -\n"
+            "        GetLayoutConstant(LayoutConstant::kVerticalTabStripHorizontalPadding);\n"
+            "\n"
+            "    // When we are in collapsed state, only one child should be shown per row.\n"
+            "    // During collapse animation and other cases, fit as many as possible.\n"
+            "    children_on_row =\n"
+            "        tabs::IsVerticalTabsExpandOnHoverFeatureEnabled() &&\n"
+            "                collapse_state ==\n"
+            "                    tabs::VerticalTabStripCollapseState::kCollapsed\n"
+            "            ? 1\n"
+            "            : std::min(\n"
+            "                  children_on_row,\n"
+            "                  static_cast<int>(std::floor((available_width - child_width) /\n"
+            "                                              (child_width + kTabPadding)) +\n"
+            "                                   1));\n"
+        )
+        new = (
+            "    // XPLORER: favorites density. One full-width row per pinned tab,\n"
+            "    // not a wrapping grid of icon tiles. The collapsed rail is\n"
+            "    // already one column because its width is the rail width.\n"
+            "    int available_width =\n"
+            "        size_bounds.width().value() -\n"
+            "        GetLayoutConstant(LayoutConstant::kVerticalTabStripHorizontalPadding);\n"
+            "\n"
+            "    children_on_row = 1;\n"
+        )
+        if old not in ptext:
+            sys.exit(f"ANCHOR NOT FOUND in {pinned} (column)")
+        ptext = ptext.replace(old, new, 1)
+        old = "        y = total_height + kTabPadding;\n"
+        new = (
+            "        // XPLORER: favorites density. 2px between rows, not 4.\n"
+            "        y = total_height + 2;\n"
+        )
+        if old not in ptext:
+            sys.exit(f"ANCHOR NOT FOUND in {pinned} (row gap)")
+        pinned.write_text(ptext.replace(old, new, 1))
+        print(f"  edited: {pinned}")
+
+    layout = src / "chrome/browser/ui/views/tabs/common/tab_view_vertical_layout.cc"
+    ltext = layout.read_text()
+    if "XPLORER: favorites density" in ltext:
+        print(f"  skip (already applied): {layout}")
+    else:
+        old = (
+            "  const bool is_centered = (TabView().pinned_ || TabView().collapsed_) &&\n"
+            "                           !TabView().IsInExpandOnHover(width);\n"
+        )
+        new = (
+            "  // XPLORER: favorites density. An open pinned row keeps the icon\n"
+            "  // leading so the title can sit beside it. The collapsed rail\n"
+            "  // still centers the icon.\n"
+            "  const bool is_centered =\n"
+            "      TabView().collapsed_ && !TabView().IsInExpandOnHover(width);\n"
+        )
+        if old not in ltext:
+            sys.exit(f"ANCHOR NOT FOUND in {layout} (centered)")
+        ltext = ltext.replace(old, new, 1)
+        old = (
+            "  if (child_view == TabView().title_) {\n"
+            "    // Pinned titles should be visible in the expand on hover state when the\n"
+            "    // width is sufficient to show the title.\n"
+            "    return !TabView().pinned_ || TabView().IsInExpandOnHover(width);\n"
+            "  }\n"
+        )
+        new = (
+            "  if (child_view == TabView().title_) {\n"
+            "    // XPLORER: favorites density. Pinned titles show when the\n"
+            "    // sidebar is open, not only during expand-on-hover.\n"
+            "    if (TabView().pinned_) {\n"
+            "      return !TabView().collapsed_ || TabView().IsInExpandOnHover(width);\n"
+            "    }\n"
+            "    return true;\n"
+            "  }\n"
+        )
+        if old not in ltext:
+            sys.exit(f"ANCHOR NOT FOUND in {layout} (title)")
+        layout.write_text(ltext.replace(old, new, 1))
+        print(f"  edited: {layout}")
+
+
 def patch_quiet_sidebar_toolbar(src: Path):
     """Arc/Dia: no tab-search cluster or hairline above the space header."""
     top = src / (
@@ -2954,6 +3126,7 @@ def main(src: Path):
     patch_hover_close(src)
     patch_quiet_tab_type(src)
     patch_quiet_sidebar_toolbar(src)
+    patch_favorites_density(src)
 
     patch_xplorer_settings_access(src)
 
