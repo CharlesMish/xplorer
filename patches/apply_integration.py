@@ -569,6 +569,45 @@ def patch_quiet_tab_type(src: Path):
         print(f"  skip (already applied): {view}")
 
 
+def patch_quiet_toolbar_edge(src: Path):
+    """Arc/Dia: no profile chip or divider on the toolbar's right edge."""
+    path = src / "chrome/browser/ui/views/toolbar/toolbar_view.cc"
+    text = path.read_text()
+    if "XPLORER: quiet toolbar edge" in text:
+        print(f"  skip (already applied): {path}")
+        return
+    old = (
+        "  if (toolbar_divider) {\n"
+        "    toolbar_divider_ = AddChildView(std::move(toolbar_divider));\n"
+        "  }\n"
+    )
+    new = (
+        "  if (toolbar_divider) {\n"
+        "    toolbar_divider_ = AddChildView(std::move(toolbar_divider));\n"
+        "    // XPLORER: quiet toolbar edge. The rule between extensions and\n"
+        "    // Grok is Chrome chrome.\n"
+        "    toolbar_divider_->SetVisible(false);\n"
+        "  }\n"
+    )
+    if old not in text:
+        sys.exit(f"ANCHOR NOT FOUND in {path} (divider)")
+    text = text.replace(old, new, 1)
+    old = (
+        "    bool show_avatar_toolbar_button =\n"
+        "        AvatarToolbarButtonInterface::CanShowForProfile(browser_->GetProfile());\n"
+        "    avatar_->SetVisible(show_avatar_toolbar_button);\n"
+    )
+    new = (
+        "    // XPLORER: quiet toolbar edge. Arc keeps the profile out of the\n"
+        "    // toolbar. The app menu still opens it.\n"
+        "    avatar_->SetVisible(false);\n"
+    )
+    if old not in text:
+        sys.exit(f"ANCHOR NOT FOUND in {path} (avatar)")
+    path.write_text(text.replace(old, new, 1))
+    print(f"  edited: {path}")
+
+
 def patch_quiet_toolbar_pins(src: Path):
     """Arc/Dia: the toolbar keeps Grok and drops Chrome Labs and tab search."""
     path = src / (
@@ -3171,6 +3210,7 @@ def main(src: Path):
     patch_quiet_sidebar_toolbar(src)
     patch_favorites_density(src)
     patch_quiet_toolbar_pins(src)
+    patch_quiet_toolbar_edge(src)
 
     patch_xplorer_settings_access(src)
 
