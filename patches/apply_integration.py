@@ -294,6 +294,106 @@ def patch_soft_tab_pills(src: Path):
     print(f"  edited: {path}")
 
 
+def patch_hide_top_toolbar(src: Path):
+    """Arc: the address field lives above the sidebar, not across the page."""
+    path = src / "chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.cc"
+    text = path.read_text()
+    if "XPLORER: address field lives in the sidebar" in text:
+        print(f"  skip (already applied): {path.name}")
+        return
+    old = "  const bool toolbar_visible = delegate().IsToolbarVisible();\n"
+    new = (
+        "  // XPLORER: address field lives in the sidebar. Hide the Chrome\n"
+        "  // toolbar across the top of the page when vertical tabs are on.\n"
+        "  const bool toolbar_visible = delegate().IsToolbarVisible() &&\n"
+        "      layout_data_->tab_strip_type != TabStripType::kVertical;\n"
+    )
+    if old not in text:
+        sys.exit(f"ANCHOR NOT FOUND in {path} (hide top toolbar)")
+    path.write_text(text.replace(old, new, 1))
+    print(f"  edited: {path}")
+
+
+def patch_sidebar_location_focus(src: Path):
+    """Cmd-L focuses the sidebar field once the top toolbar is hidden."""
+    view = src / "chrome/browser/ui/views/frame/browser_view.cc"
+    text = view.read_text()
+    if "XPLORER: address field lives in the sidebar" not in text:
+        old = (
+            "#endif\n"
+            "  if (!IsLocationBarVisible()) {\n"
+            "    return;\n"
+            "  }\n"
+            "\n"
+            "  LocationBar* location_bar = GetLocationBar();\n"
+        )
+        new = (
+            "#endif\n"
+            "  // XPLORER: address field lives in the sidebar.\n"
+            "  if (xplorer_sidebar_chrome_) {\n"
+            "    xplorer_sidebar_chrome_->FocusUrlField();\n"
+            "    return;\n"
+            "  }\n"
+            "  if (!IsLocationBarVisible()) {\n"
+            "    return;\n"
+            "  }\n"
+            "\n"
+            "  LocationBar* location_bar = GetLocationBar();\n"
+        )
+        if old not in text:
+            sys.exit(f"ANCHOR NOT FOUND in {view} (sidebar location focus)")
+        view.write_text(text.replace(old, new, 1))
+        print(f"  edited: {view}")
+    else:
+        print(f"  skip (already applied): {view.name}")
+
+    commands = src / "chrome/browser/ui/browser_command_controller.cc"
+    text = commands.read_text()
+    if "XPLORER: sidebar address field is the location bar" not in text:
+        old = (
+            "    case IDC_FOCUS_LOCATION:\n"
+            "      if (!window()->IsLocationBarVisible()) {\n"
+            "        break;\n"
+            "      }\n"
+            "      base::RecordAction(base::UserMetricsAction(\"Accel_Focus_Location\"));\n"
+            "      FocusLocationBar(browser_);\n"
+            "      break;\n"
+        )
+        new = (
+            "    case IDC_FOCUS_LOCATION:\n"
+            "      // XPLORER: sidebar address field is the location bar when\n"
+            "      // the top toolbar is hidden. SetFocusToLocationBar no-ops\n"
+            "      // if neither field is available.\n"
+            "      base::RecordAction(base::UserMetricsAction(\"Accel_Focus_Location\"));\n"
+            "      FocusLocationBar(browser_);\n"
+            "      break;\n"
+        )
+        if old not in text:
+            sys.exit(f"ANCHOR NOT FOUND in {commands} (focus location)")
+        commands.write_text(text.replace(old, new, 1))
+        print(f"  edited: {commands}")
+    else:
+        print(f"  skip (already applied): {commands.name}")
+
+
+def patch_enable_glass_frame(src: Path):
+    """Arc window: translucent sidebar with the system blur behind it."""
+    path = src / "ui/base/ui_base_features.cc"
+    text = path.read_text()
+    old = "BASE_FEATURE(kGlassFrame, base::FEATURE_DISABLED_BY_DEFAULT);\n"
+    new = (
+        "// XPLORER: translucent window with system blur behind the sidebar.\n"
+        "BASE_FEATURE(kGlassFrame, base::FEATURE_ENABLED_BY_DEFAULT);\n"
+    )
+    if "XPLORER: translucent window" in text:
+        print(f"  skip (already applied): {path.name}")
+        return
+    if old not in text:
+        sys.exit(f"ANCHOR NOT FOUND in {path} (glass frame)")
+    path.write_text(text.replace(old, new, 1))
+    print(f"  edited: {path}")
+
+
 def patch_sidebar_plane(src: Path):
     """Dia/Arc: the sidebar is its own flat plane, not Chrome's window frame."""
     path = src / "chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc"
@@ -3713,6 +3813,9 @@ def main(src: Path):
     patch_vertical_sidebar(src)
     patch_soft_tab_pills(src)
     patch_sidebar_plane(src)
+    patch_hide_top_toolbar(src)
+    patch_sidebar_location_focus(src)
+    patch_enable_glass_frame(src)
     patch_quiet_new_tab_row(src)
     patch_hover_close(src)
     patch_quiet_tab_type(src)

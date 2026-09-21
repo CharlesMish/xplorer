@@ -111,6 +111,15 @@ base::CallbackListSubscription AddBookmarkConfigChangedCallback(
 // Notifies subscribers. Must be called on the UI thread.
 void NotifyBookmarkConfigChanged();
 
+// Onboarding choices stored in grok_settings.json. Pinned apps are
+// {id,label,url} and render as tiles at the top of the sidebar. Theme color
+// is "#RRGGBB" and paints the space swatch. Empty string means the default.
+std::vector<base::DictValue> GetPinnedAppConfigs();
+std::string GetThemeColor();
+base::CallbackListSubscription AddOnboardingChangedCallback(
+    base::RepeatingClosure callback);
+void NotifyOnboardingChanged();
+
 // NTP / omnibox Grok chip destination based on search_home preference.
 GURL GetDefaultSearchHomeURL();
 

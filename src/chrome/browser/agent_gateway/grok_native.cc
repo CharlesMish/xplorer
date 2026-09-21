@@ -61,6 +61,7 @@
 #if BUILDFLAG(IS_MAC)
 #include "chrome/browser/xplorer_sparkle_updater.h"  // XPLORER: update controls
 #endif
+#include "chrome/browser/agent_gateway/xplorer_onboarding.h"
 #include "chrome/browser/agent_gateway/xplorer_paths.h"
 #include "chrome/browser/grok_companion/grok_companion_util.h"
 #include "chrome/browser/agent_gateway/tab_screenshot.h"
@@ -816,6 +817,9 @@ struct GrokLoginState {
   bool running = false;
   bool done = false;
   bool ok = false;
+  // Welcome sets this false and navigates the current tab itself, so the
+  // worker must not also open a second auth tab.
+  bool open_tab = true;
   std::string url;
   std::string error;
   std::string message;
@@ -869,6 +873,59 @@ void OpenUrlInXplorTab(const std::string& url) {
                        Navigate(&params);
                      },
                      url));
+}
+
+// After a welcome-driven OAuth attempt, bring the auth tab back to the wizard.
+void ReturnToOnboardingStep(const std::string& step) {
+  content::GetUIThreadTaskRunner({})->PostTask(
+      FROM_HERE, base::BindOnce(
+                     [](std::string step) {
+                       GURL welcome = grok_companion::GetWelcomeURL();
+                       if (!welcome.is_valid())
+                         return;
+                       GURL::Replacements repl;
+                       const std::string query = "step=" + step;
+                       repl.SetQueryStr(query);
+                       welcome = welcome.ReplaceComponents(repl);
+                       bool navigated = false;
+                       ForEachCurrentBrowserWindowInterfaceOrderedByActivation(
+                           [&](BrowserWindowInterface* browser) {
+                             if (navigated || !browser)
+                               return false;
+                             TabStripModel* model = browser->GetTabStripModel();
+                             if (!model)
+                               return true;
+                             for (int i = 0; i < model->count(); ++i) {
+                               content::WebContents* contents =
+                                   model->GetWebContentsAt(i);
+                               if (!contents)
+                                 continue;
+                               const GURL& url = contents->GetVisibleURL();
+                               const bool auth = url.host() == "auth.x.ai";
+                               // The CLI callback is a loopback port, not the
+                               // companion gateway. Don't steal a welcome tab.
+                               const bool cli_callback =
+                                   url.SchemeIsHTTPOrHTTPS() &&
+                                   (url.host() == "127.0.0.1" ||
+                                    url.host() == "localhost") &&
+                                   url.EffectiveIntPort() !=
+                                       welcome.EffectiveIntPort();
+                               if (!auth && !cli_callback)
+                                 continue;
+                               model->ActivateTabAt(i);
+                               NavigateParams params(
+                                   browser, welcome,
+                                   ui::PAGE_TRANSITION_AUTO_TOPLEVEL);
+                               params.disposition =
+                                   WindowOpenDisposition::CURRENT_TAB;
+                               Navigate(&params);
+                               navigated = true;
+                               return false;
+                             }
+                             return true;
+                           });
+                     },
+                     step));
 }
 
 // True when ~/.grok/auth.json looks like a usable OAuth/API session.
@@ -974,13 +1031,16 @@ void RunGrokLoginOAuthWorker() {
           if (!opened_tab) {
             std::string url = ExtractGrokAuthUrl(output);
             if (!url.empty()) {
+              bool open_tab = true;
               {
                 base::AutoLock lock(LoginState().lock);
                 LoginState().url = url;
                 LoginState().message =
-                    "Complete sign-in in the browser tab, then return here.";
+                    "Complete sign-in in this browser, then you'll come back here.";
+                open_tab = LoginState().open_tab;
               }
-              OpenUrlInXplorTab(url);
+              if (open_tab)
+                OpenUrlInXplorTab(url);
               opened_tab = true;
             }
           }
@@ -1024,21 +1084,27 @@ void RunGrokLoginOAuthWorker() {
   if (!output.empty()) {
     std::string url = ExtractGrokAuthUrl(output);
     if (!url.empty()) {
-      base::AutoLock lock(LoginState().lock);
-      if (LoginState().url.empty()) {
-        LoginState().url = url;
-        OpenUrlInXplorTab(url);
+      bool open_tab = true;
+      {
+        base::AutoLock lock(LoginState().lock);
+        open_tab = LoginState().open_tab;
+        if (LoginState().url.empty())
+          LoginState().url = url;
       }
+      if (open_tab)
+        OpenUrlInXplorTab(url);
     }
   }
 
   const bool saved = !LoadGrokOAuthAccessToken().empty();
   const bool ok = ran && exit_code == 0 && saved;
+  bool welcome_flow = false;
   {
     base::AutoLock lock(LoginState().lock);
     LoginState().running = false;
     LoginState().done = true;
     LoginState().ok = ok;
+    welcome_flow = !LoginState().open_tab;
     if (ok) {
       LoginState().message = "Signed in ✓";
       LoginState().error.clear();
@@ -1050,6 +1116,8 @@ void RunGrokLoginOAuthWorker() {
       LoginState().message.clear();
     }
   }
+  if (welcome_flow)
+    ReturnToOnboardingStep(ok ? "import" : "account");
 }
 
 // Remove the signed-in OAuth account from ~/.grok/auth.json. Leaves any
@@ -1099,7 +1167,8 @@ base::DictValue SignOutGrokOAuth() {
 }
 
 // Kick off OAuth login if not already running. Returns current status dict.
-base::DictValue StartGrokLoginOAuth() {
+// |open_tab| is false for the welcome wizard, which navigates the current tab.
+base::DictValue StartGrokLoginOAuth(bool open_tab) {
   {
     base::AutoLock lock(LoginState().lock);
     if (LoginState().running)
@@ -1107,9 +1176,11 @@ base::DictValue StartGrokLoginOAuth() {
     LoginState().running = true;
     LoginState().done = false;
     LoginState().ok = false;
+    LoginState().open_tab = open_tab;
     LoginState().url.clear();
     LoginState().error.clear();
-    LoginState().message = "Opening browser for sign-in…";
+    LoginState().message = open_tab ? "Opening browser for sign-in…"
+                                    : "Continue sign-in in this tab.";
   }
   base::ThreadPool::PostTask(FROM_HERE,
                              {base::MayBlock(), base::TaskPriority::USER_VISIBLE,
@@ -1258,6 +1329,16 @@ std::string TrimUrlTrailingPunct(std::string url) {
 
 bool IsHttpUrl(const std::string& url) {
   return base::StartsWith(url, "http://") || base::StartsWith(url, "https://");
+}
+
+bool IsThemeHex(const std::string& color) {
+  if (color.size() != 7 || color[0] != '#')
+    return false;
+  for (size_t i = 1; i < color.size(); ++i) {
+    if (!base::IsHexDigit(color[i]))
+      return false;
+  }
+  return true;
 }
 
 std::string DetectProvider(const std::string& url) {
@@ -3951,7 +4032,12 @@ bool GrokNative::TryHandleRequest(
   // POST starts `grok login --oauth` and opens the auth.x.ai URL in an Xplor
   // tab; GET polls progress until the CLI finishes the loopback callback.
   if (info.method == "POST" && path == "/api/grok/login") {
-    SendJson(server, connection_id, net::HTTP_OK, StartGrokLoginOAuth());
+    bool open_tab = true;
+    if (auto body = base::JSONReader::ReadDict(info.data, base::JSON_PARSE_RFC)) {
+      if (std::optional<bool> open = body->FindBool("open_tab"))
+        open_tab = *open;
+    }
+    SendJson(server, connection_id, net::HTTP_OK, StartGrokLoginOAuth(open_tab));
     return true;
   }
   if (info.method == "GET" && path == "/api/grok/login") {
@@ -3961,6 +4047,111 @@ bool GrokNative::TryHandleRequest(
 
   if (info.method == "POST" && path == "/api/grok/logout") {
     SendJson(server, connection_id, net::HTTP_OK, SignOutGrokOAuth());
+    return true;
+  }
+
+  // First-run import. Detection and the importer host are UI-thread only.
+  if (info.method == "GET" && path == "/api/import/browsers") {
+    content::GetUIThreadTaskRunner({})->PostTask(
+        FROM_HERE,
+        base::BindOnce(
+            [](net::HttpServer* srv,
+               scoped_refptr<base::SingleThreadTaskRunner> io, int cid) {
+              xplorer::DetectImportBrowsers(base::BindOnce(
+                  [](net::HttpServer* srv,
+                     scoped_refptr<base::SingleThreadTaskRunner> io, int cid,
+                     base::ListValue browsers) {
+                    base::DictValue d;
+                    d.Set("ok", true);
+                    d.Set("browsers", std::move(browsers));
+                    ReplyJsonOnIO(srv, io, cid, std::move(d));
+                  },
+                  srv, io, cid));
+            },
+            server, io_task_runner, connection_id));
+    return true;
+  }
+  if (info.method == "GET" && path == "/api/import/status") {
+    content::GetUIThreadTaskRunner({})->PostTask(
+        FROM_HERE,
+        base::BindOnce(
+            [](net::HttpServer* srv,
+               scoped_refptr<base::SingleThreadTaskRunner> io, int cid) {
+              ReplyJsonOnIO(srv, io, cid, xplorer::BrowserImportStatus());
+            },
+            server, io_task_runner, connection_id));
+    return true;
+  }
+  if (info.method == "POST" && path == "/api/import") {
+    auto body = base::JSONReader::ReadDict(info.data, base::JSON_PARSE_RFC);
+    const int index = body ? body->FindInt("index").value_or(-1) : -1;
+    const bool bookmarks =
+        body ? body->FindBool("bookmarks").value_or(true) : true;
+    const bool history = body ? body->FindBool("history").value_or(false) : false;
+    const bool passwords =
+        body ? body->FindBool("passwords").value_or(false) : false;
+    const bool search =
+        body ? body->FindBool("search").value_or(false) : false;
+    content::GetUIThreadTaskRunner({})->PostTask(
+        FROM_HERE,
+        base::BindOnce(
+            [](net::HttpServer* srv,
+               scoped_refptr<base::SingleThreadTaskRunner> io, int cid,
+               int index, bool bookmarks, bool history, bool passwords,
+               bool search) {
+              ReplyJsonOnIO(srv, io, cid,
+                            xplorer::StartBrowserImport(
+                                index, bookmarks, history, passwords, search));
+            },
+            server, io_task_runner, connection_id, index, bookmarks, history,
+            passwords, search));
+    return true;
+  }
+  if (info.method == "GET" && path == "/api/default-browser") {
+    content::GetUIThreadTaskRunner({})->PostTask(
+        FROM_HERE,
+        base::BindOnce(
+            [](net::HttpServer* srv,
+               scoped_refptr<base::SingleThreadTaskRunner> io, int cid) {
+              xplorer::CheckDefaultBrowser(base::BindOnce(
+                  [](net::HttpServer* srv,
+                     scoped_refptr<base::SingleThreadTaskRunner> io, int cid,
+                     bool is_default, const std::string& state) {
+                    base::DictValue d;
+                    d.Set("ok", true);
+                    d.Set("is_default", is_default);
+                    d.Set("state", state);
+                    ReplyJsonOnIO(srv, io, cid, std::move(d));
+                  },
+                  srv, io, cid));
+            },
+            server, io_task_runner, connection_id));
+    return true;
+  }
+  if (info.method == "POST" && path == "/api/default-browser") {
+    content::GetUIThreadTaskRunner({})->PostTask(
+        FROM_HERE,
+        base::BindOnce(
+            [](net::HttpServer* srv,
+               scoped_refptr<base::SingleThreadTaskRunner> io, int cid) {
+              xplorer::SetDefaultBrowser(base::BindOnce(
+                  [](net::HttpServer* srv,
+                     scoped_refptr<base::SingleThreadTaskRunner> io, int cid,
+                     bool is_default, const std::string& state) {
+                    base::DictValue d;
+                    d.Set("ok", is_default);
+                    d.Set("is_default", is_default);
+                    d.Set("state", state);
+                    if (!is_default) {
+                      d.Set("error",
+                            "macOS needs you to confirm Xplor in the dialog "
+                            "that just opened.");
+                    }
+                    ReplyJsonOnIO(srv, io, cid, std::move(d));
+                  },
+                  srv, io, cid));
+            },
+            server, io_task_runner, connection_id));
     return true;
   }
 
@@ -4169,6 +4360,11 @@ bool GrokNative::TryHandleRequest(
               "/search");
     d.Set("grok_wiki_url", kGrokWikiHomeURL);
     d.Set("welcome_completed", grok_companion::HasCompletedWelcome());
+    d.Set("onboarding_version", d.FindInt("onboarding_version").value_or(0));
+    if (!d.FindList("pinned_apps"))
+      d.Set("pinned_apps", base::ListValue());
+    if (!d.FindString("theme_color"))
+      d.Set("theme_color", "#7d8794");
     d.Set("product_name", grok_companion::kProductName);
     EnrichSettingsResponse(&d, gateway_port);
     SendJson(server, connection_id, net::HTTP_OK, std::move(d));
@@ -4187,6 +4383,9 @@ bool GrokNative::TryHandleRequest(
     const std::string* search_model = body->FindString("search_model");
     const std::string* home = body->FindString("search_home");
     const base::ListValue* bookmarks = body->FindList("bookmarks");
+    const base::ListValue* pinned_apps = body->FindList("pinned_apps");
+    const std::string* theme_color = body->FindString("theme_color");
+    std::optional<int> onboarding_version = body->FindInt("onboarding_version");
     std::optional<bool> welcome = body->FindBool("welcome_completed");
     std::optional<int> max_turns = body->FindInt("max_turns");
     const std::string* effort = body->FindString("effort");
@@ -4251,9 +4450,67 @@ bool GrokNative::TryHandleRequest(
       SetConfiguredEffort(*effort);
       updated = true;
     }
+    bool onboarding_changed = false;
+    if (theme_color && !theme_color->empty()) {
+      if (!IsThemeHex(*theme_color)) {
+        base::DictValue err;
+        err.Set("error", "theme_color must be #RRGGBB");
+        SendJson(server, connection_id, net::HTTP_BAD_REQUEST, std::move(err));
+        return true;
+      }
+      base::DictValue settings = LoadSettings();
+      settings.Set("theme_color", *theme_color);
+      SaveSettings(settings);
+      updated = true;
+      onboarding_changed = true;
+    }
+    if (pinned_apps) {
+      base::ListValue configs;
+      int row = 0;
+      for (const base::Value& entry : *pinned_apps) {
+        if (row >= 12)
+          break;
+        const base::DictValue* d = entry.GetIfDict();
+        if (!d)
+          continue;
+        const std::string* url = d->FindString("url");
+        if (!url || !IsHttpUrl(*url) || !GURL(*url).is_valid())
+          continue;
+        const std::string* id = d->FindString("id");
+        const std::string* label = d->FindString("label");
+        if (label && label->size() > 40)
+          continue;
+        base::DictValue out;
+        out.Set("id", (id && !id->empty() && id->size() <= 32)
+                         ? *id
+                         : base::NumberToString(++row));
+        if (id && !id->empty())
+          ++row;
+        out.Set("label", label ? *label : std::string());
+        out.Set("url", *url);
+        configs.Append(std::move(out));
+      }
+      base::DictValue settings = LoadSettings();
+      settings.Set("pinned_apps", std::move(configs));
+      SaveSettings(settings);
+      updated = true;
+      onboarding_changed = true;
+    }
+    if (onboarding_version && *onboarding_version >= 0 &&
+        *onboarding_version <= 9) {
+      base::DictValue settings = LoadSettings();
+      settings.Set("onboarding_version", *onboarding_version);
+      SaveSettings(settings);
+      updated = true;
+    }
     if (welcome.has_value() && *welcome) {
       grok_companion::MarkWelcomeCompleted();
       updated = true;
+      onboarding_changed = true;
+    }
+    if (onboarding_changed) {
+      content::GetUIThreadTaskRunner({})->PostTask(
+          FROM_HERE, base::BindOnce(&grok_companion::NotifyOnboardingChanged));
     }
     if (bookmarks) {
       // Persist the full ordered bookmark list. Each entry must be
@@ -4294,7 +4551,7 @@ bool GrokNative::TryHandleRequest(
       base::DictValue err;
       err.Set("error",
               "provide model, search_model, search_home, bookmarks, "
-              "and/or welcome_completed");
+              "pinned_apps, theme_color, and/or welcome_completed");
       SendJson(server, connection_id, net::HTTP_BAD_REQUEST, std::move(err));
       return true;
     }
@@ -4310,10 +4567,16 @@ bool GrokNative::TryHandleRequest(
     d.Set("grok_wiki_url", kGrokWikiHomeURL);
     d.Set("welcome_completed", grok_companion::HasCompletedWelcome());
     d.Set("product_name", grok_companion::kProductName);
+    d.Set("onboarding_version",
+          LoadSettings().FindInt("onboarding_version").value_or(0));
     // Reflect the stored bookmark config back so the editor can re-read it.
     if (base::DictValue settings = LoadSettings(); true) {
       if (const base::ListValue* stored_bm = settings.FindList("bookmarks"))
         d.Set("bookmarks", stored_bm->Clone());
+      if (const base::ListValue* stored_pins = settings.FindList("pinned_apps"))
+        d.Set("pinned_apps", stored_pins->Clone());
+      if (const std::string* stored_theme = settings.FindString("theme_color"))
+        d.Set("theme_color", *stored_theme);
     }
     EnrichSettingsResponse(&d, gateway_port);
     SendJson(server, connection_id, net::HTTP_OK, std::move(d));

@@ -1,69 +1,95 @@
 <!DOCTYPE html>
-<html lang="en" class="grok-build">
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Welcome — Xplor</title>
-  <link rel="stylesheet" href="/theme.css">
-  <script>document.documentElement.setAttribute('data-theme',matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light');</script>
-  <link rel="stylesheet" href="/toolbar.css">
   <link rel="stylesheet" href="/welcome.css">
 </head>
-<body data-grok-toolbar="auto">
-  <div id="grok-toolbar-mount"></div>
-  <main class="welcome">
-    <section class="welcome-hero">
-      <div class="welcome-hero-glow" aria-hidden="true"></div>
-      <div class="welcome-brand">
-        <span class="welcome-mark" aria-hidden="true">✦</span>
-        <h1>Xplor</h1>
-      </div>
-      <p class="welcome-tagline">The Grok-native browser</p>
-      <p class="welcome-lead">
-        Search, chat, build apps, and control tabs — with Grok built into every
-        page. No extensions. No copy-paste. Just ask.
-      </p>
+<body>
+  <main class="flow" id="flow">
+    <section class="step intro" data-step="intro" aria-label="Welcome">
+      <p class="eyebrow">Xplor</p>
+      <h1 class="slogan">A calmer way to browse.</h1>
+      <p class="sub">Grok sits beside the page. The rest of the window stays quiet.</p>
+      <button type="button" class="arrow" id="intro-next" aria-label="Continue">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h12M13 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
     </section>
 
-    <section class="welcome-grid" aria-label="What Xplor can do">
-      <article class="welcome-card">
-        <div class="welcome-card-icon" aria-hidden="true">⌕</div>
-        <h2>Grok search home</h2>
-        <p>New tabs open Grok Search. Results hand off to grok.com with full context.</p>
-      </article>
-      <article class="welcome-card">
-        <div class="welcome-card-icon" aria-hidden="true">✦</div>
-        <h2>Build &amp; chat</h2>
-        <p>Conversations, app builder, and streaming Grok — served locally on :9334.</p>
-      </article>
-      <article class="welcome-card">
-        <div class="welcome-card-icon" aria-hidden="true">⊞</div>
-        <h2>Browser control</h2>
-        <p>Organize tabs, group bookmarks, and drive the browser via native APIs and MCP.</p>
-      </article>
-      <article class="welcome-card">
-        <div class="welcome-card-icon" aria-hidden="true">⚡</div>
-        <h2>Agent-ready</h2>
-        <p>CDP on :9333, gateway on :9334. Discovery at <code>~/.xplorer/gateway.json</code>.</p>
-      </article>
-    </section>
-
-    <section class="welcome-tour" aria-label="Quick start">
-      <h2>Jump in</h2>
-      <div class="welcome-tour-links">
-        <a class="welcome-tour-link primary" href="/search">Grok Search</a>
-        <a class="welcome-tour-link" href="/">Conversations</a>
-        <a class="welcome-tour-link" href="/apps">Build an app</a>
-        <a class="welcome-tour-link" href="/settings">Settings</a>
+    <section class="step account hidden" data-step="account" aria-label="Sign in">
+      <div class="split">
+        <div class="split-copy">
+          <p class="eyebrow">Xplor</p>
+          <h1>Sign in to Grok.</h1>
+          <p>Chat, search, and the sidebar all use the same account. Sign-in stays in this window.</p>
+        </div>
+        <div class="split-panel">
+          <h2>Continue with Grok</h2>
+          <p class="panel-note" id="account-note">One step. It opens here, not in another browser.</p>
+          <p class="error" id="account-error" hidden></p>
+          <button type="button" class="primary" id="sign-in">Continue with Grok</button>
+          <button type="button" class="ghost" id="skip-sign-in">Skip for now</button>
+        </div>
       </div>
     </section>
 
-    <footer class="welcome-actions">
-      <button type="button" id="get-started" class="welcome-cta">Get started</button>
-      <p class="welcome-note">Configure defaults in <a href="/settings">Grok settings</a> · data in <code>~/.xplorer</code></p>
-    </footer>
+    <section class="step import hidden" data-step="import" aria-label="Import">
+      <div class="sheet">
+        <p class="eyebrow">Bring it with you</p>
+        <h1>Import from Safari or another browser.</h1>
+        <p class="lead">Bookmarks, history, and passwords stay on this Mac. Nothing is uploaded.</p>
+        <div id="browser-list" class="browser-list" aria-live="polite"></div>
+        <fieldset class="checks" id="import-kinds">
+          <label><input type="checkbox" id="import-bookmarks" checked> Bookmarks</label>
+          <label><input type="checkbox" id="import-history"> History</label>
+          <label><input type="checkbox" id="import-passwords"> Passwords</label>
+        </fieldset>
+        <p class="error" id="import-error" hidden></p>
+        <div class="row">
+          <button type="button" class="primary" id="do-import">Import</button>
+          <button type="button" class="ghost" id="skip-import">Skip</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="step favorites hidden" data-step="favorites" aria-label="Favorite apps">
+      <div class="sheet">
+        <p class="eyebrow">Sidebar</p>
+        <h1>Which apps should stay pinned?</h1>
+        <p class="lead">These sit at the top left of the sidebar. You can change them later.</p>
+        <div id="app-grid" class="app-grid"></div>
+        <div class="row">
+          <button type="button" class="primary" id="save-apps">Continue</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="step theme hidden" data-step="theme" aria-label="Theme">
+      <div class="sheet">
+        <p class="eyebrow">Tone</p>
+        <h1>Pick a color for the space.</h1>
+        <p class="lead">Cool blacks and greys. It paints the mark next to Xplor.</p>
+        <div id="tone-grid" class="tone-grid"></div>
+        <div class="row">
+          <button type="button" class="primary" id="save-theme">Continue</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="step default hidden" data-step="default" aria-label="Default browser">
+      <div class="sheet">
+        <p class="eyebrow">Last step</p>
+        <h1>Open links in Xplor?</h1>
+        <p class="lead" id="default-note">macOS will ask you to confirm. The window then uses a blurred sidebar, with your apps pinned at the top left.</p>
+        <p class="error" id="default-error" hidden></p>
+        <div class="row">
+          <button type="button" class="primary" id="make-default">Use Xplor as default</button>
+          <button type="button" class="ghost" id="skip-default">Not now</button>
+        </div>
+      </div>
+    </section>
   </main>
-  <script src="/toolbar.js"></script>
   <script src="/common.js"></script>
   <script src="/welcome.js"></script>
 </body>

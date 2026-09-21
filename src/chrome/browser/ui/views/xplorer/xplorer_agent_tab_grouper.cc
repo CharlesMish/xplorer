@@ -153,7 +153,7 @@ std::optional<tab_groups::TabGroupId> FindGroupWithPrefix(
 // this factory) — no new GN dep, mirroring the existing grok_companion pattern.
 tab_groups::TabGroupSyncService* SyncServiceFor(Browser* browser) {
   return browser ? tab_groups::TabGroupSyncServiceFactory::GetForProfile(
-                       browser->profile())
+                       browser->GetProfile())
                  : nullptr;
 }
 

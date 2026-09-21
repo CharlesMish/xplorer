@@ -24,6 +24,8 @@ source_set("agent_gateway") {
     "tab_screenshot.h",
     "update_checker.cc",
     "update_checker.h",
+    "xplorer_onboarding.cc",
+    "xplorer_onboarding.h",
     "xplorer_paths.cc",
     "xplorer_paths.h",
   ]

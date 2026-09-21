@@ -27,6 +27,9 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/navigator/browser_navigator.h"
+#include "chrome/browser/ui/navigator/browser_navigator_params.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "components/tabs/public/tab_interface.h"
 #include "chrome/browser/ui/side_panel/side_panel_entry.h"
 #include "chrome/browser/ui/side_panel/side_panel_entry_id.h"
@@ -35,6 +38,7 @@
 #include "chrome/browser/ui/side_panel/side_panel_ui.h"
 #include "chrome/browser/ui/views/side_panel/side_panel_web_ui_view.h"
 #include "chrome/common/webui_url_constants.h"
+#include "content/public/browser/browser_thread.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/web_contents.h"
 #include "ui/base/page_transition_types.h"
@@ -244,6 +248,11 @@ base::RepeatingClosureList& BookmarkConfigChangedCallbacks() {
   return *list;
 }
 
+base::RepeatingClosureList& OnboardingChangedCallbacks() {
+  static base::NoDestructor<base::RepeatingClosureList> list;
+  return *list;
+}
+
 }  // namespace
 
 base::FilePath ResolveDataFile(const char* filename) {
@@ -264,12 +273,17 @@ GURL GetWelcomeURL() {
 
 bool HasCompletedWelcome() {
   base::DictValue settings = LoadGrokSettings();
+  // v2 is the Arc-style wizard (sign-in, import, pins, theme, default).
+  // Older installs that only set welcome_completed still need to see it.
+  if (settings.FindInt("onboarding_version").value_or(0) < 2)
+    return false;
   return settings.FindBool("welcome_completed").value_or(false);
 }
 
 void MarkWelcomeCompleted() {
   base::DictValue settings = LoadGrokSettings();
   settings.Set("welcome_completed", true);
+  settings.Set("onboarding_version", 2);
   SaveGrokSettings(settings);
 }
 
@@ -369,6 +383,35 @@ void NotifyBookmarkConfigChanged() {
   BookmarkConfigChangedCallbacks().Notify();
 }
 
+std::vector<base::DictValue> GetPinnedAppConfigs() {
+  std::vector<base::DictValue> apps;
+  base::DictValue settings = LoadGrokSettings();
+  const base::ListValue* list = settings.FindList("pinned_apps");
+  if (!list)
+    return apps;
+  for (const base::Value& entry : *list) {
+    if (!entry.is_dict())
+      continue;
+    apps.push_back(entry.GetDict().Clone());
+  }
+  return apps;
+}
+
+std::string GetThemeColor() {
+  base::DictValue settings = LoadGrokSettings();
+  const std::string* color = settings.FindString("theme_color");
+  return color ? *color : std::string();
+}
+
+base::CallbackListSubscription AddOnboardingChangedCallback(
+    base::RepeatingClosure callback) {
+  return OnboardingChangedCallbacks().Add(std::move(callback));
+}
+
+void NotifyOnboardingChanged() {
+  OnboardingChangedCallbacks().Notify();
+}
+
 GURL GetDefaultSearchHomeURL() {
   const std::string home = GetSearchHomeMode();
   if (home == kSearchHomeWeb)
@@ -400,9 +443,42 @@ void RedirectLegacyNewTabIfNeeded(content::WebContents* contents) {
   contents->GetController().LoadURLWithParams(params);
 }
 
+void MaybeShowOnboarding(BrowserWindowInterface* browser) {
+  if (!browser || HasCompletedWelcome())
+    return;
+  if (browser->GetType() != BrowserWindowInterface::TYPE_NORMAL)
+    return;
+  TabStripModel* model = browser->GetTabStripModel();
+  if (!model)
+    return;
+  const GURL welcome = GetWelcomeURL();
+  for (int i = 0; i < model->count(); ++i) {
+    content::WebContents* contents = model->GetWebContentsAt(i);
+    if (!contents)
+      continue;
+    const GURL& url = contents->GetVisibleURL();
+    if (url.host() == welcome.host() && url.path() == welcome.path() &&
+        url.EffectiveIntPort() == welcome.EffectiveIntPort()) {
+      model->ActivateTabAt(i);
+      return;
+    }
+  }
+  NavigateParams params(browser, welcome, ui::PAGE_TRANSITION_AUTO_TOPLEVEL);
+  params.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
+  Navigate(&params);
+}
+
 void RegisterGrokSidePanel(BrowserWindowInterface* browser) {
   if (!browser)
     return;
+  content::GetUIThreadTaskRunner({})->PostTask(
+      FROM_HERE,
+      base::BindOnce(
+          [](base::WeakPtr<BrowserWindowInterface> browser) {
+            if (browser)
+              MaybeShowOnboarding(browser.get());
+          },
+          browser->GetWeakPtr()));
   RegisterGrokWebBar(browser);
   RegisterGrokFab(browser);
   SidePanelRegistry* registry = SidePanelRegistry::From(browser);
