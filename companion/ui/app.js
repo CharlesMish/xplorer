@@ -481,9 +481,59 @@ function friendlyGrokError(raw) {
            'cycle — check usage at grok.com, then try again.';
   }
   if (/AuthorizationRequired|Unauthorized \(401\)|expired credentials|not logged in|no auth context/i.test(msg)) {
-    return 'Grok needs you to sign in again — run `grok` in a terminal to re-authenticate, then retry.';
+    return 'Grok needs you to sign in again.';
+  }
+  // Retired / mistyped model ids used to surface as a login prompt. Call that out.
+  if (/unknown model id|Couldn't set model/i.test(msg)) {
+    return 'That Grok model isn’t available on your CLI anymore. Pick another ' +
+           'model in the sidebar (e.g. Composer or grok-4.5) and try again.';
   }
   return msg;
+}
+
+// In-browser OAuth (same idea as AskHere / Xnative): POST /api/grok/login
+// starts `grok login --oauth`, opens auth.x.ai in a tab, and we poll until
+// the CLI finishes the loopback callback.
+async function startGrokBrowserLogin(statusEl) {
+  const setStatus = (text, isErr) => {
+    if (!statusEl) return;
+    statusEl.className = 'auth-login-status' + (isErr ? ' err' : '');
+    statusEl.textContent = text || '';
+  };
+  try {
+    setStatus('Opening browser for sign-in…');
+    const start = await fetch('/api/grok/login', { method: 'POST', cache: 'no-store' });
+    if (!start.ok) throw new Error('login endpoint unavailable');
+    let st = await start.json();
+    if (st.url) {
+      // Backend also opens a tab; keep a fallback in case the UI is elsewhere.
+      try { window.open(st.url, '_blank', 'noopener'); } catch (_) { /* ignore */ }
+    }
+    const deadline = Date.now() + 10 * 60 * 1000;
+    while (Date.now() < deadline) {
+      if (st.ok || st.logged_in) {
+        setStatus('Signed in ✓');
+        return true;
+      }
+      if (st.done && !st.ok) {
+        setStatus(st.error || 'Sign-in did not complete.', true);
+        return false;
+      }
+      if (st.message) setStatus(st.message);
+      await new Promise((r) => setTimeout(r, 1200));
+      const poll = await fetch('/api/grok/login', { cache: 'no-store' });
+      if (!poll.ok) throw new Error('login status unavailable');
+      st = await poll.json();
+      if (st.url) {
+        try { window.open(st.url, '_blank', 'noopener'); } catch (_) { /* ignore */ }
+      }
+    }
+    setStatus('Sign-in timed out. Try again.', true);
+    return false;
+  } catch (e) {
+    setStatus((e && e.message) || 'Could not start sign-in.', true);
+    return false;
+  }
 }
 setInterval(() => {
   const now = Date.now();
@@ -515,20 +565,46 @@ function appendError(convId) {
   const errText = document.createElement('div');
   if (st.error.needsLogin) {
     errText.className = 'auth-expired';
-    errText.innerHTML = '\U0001F511 <b>Connect to Grok to continue.</b><br>' +
-      'In a terminal, make sure Grok Build is installed, then run ' +
-      '<code>grok login</code> to sign in — and Retry.';
+    errText.innerHTML = '<b>Sign in to Grok to continue.</b>';
   } else {
     errText.textContent = 'Error: ' + (st.error.msg || '');
   }
   box.appendChild(errText);
+
+  const actions = document.createElement('div');
+  actions.className = 'auth-actions';
+
+  if (st.error.needsLogin) {
+    const loginBtn = document.createElement('button');
+    loginBtn.type = 'button';
+    loginBtn.className = 'retry-btn login-btn';
+    loginBtn.textContent = 'Sign in';
+    const statusEl = document.createElement('div');
+    statusEl.className = 'auth-login-status';
+    loginBtn.onclick = async () => {
+      loginBtn.disabled = true;
+      const ok = await startGrokBrowserLogin(statusEl);
+      loginBtn.disabled = false;
+      if (ok) {
+        // Auto-retry the failed message once signed in.
+        const text = st.error.text;
+        delete streams[convId];
+        renderMessages(currentConv());
+        sendMessage(text, { retry: true, convId });
+      }
+    };
+    actions.appendChild(loginBtn);
+    box.appendChild(statusEl);
+  }
+
   const retryBtn = document.createElement('button');
   retryBtn.type = 'button';
   retryBtn.className = 'retry-btn';
   retryBtn.textContent = 'Retry';
   const text = st.error.text;
   retryBtn.onclick = () => { delete streams[convId]; renderMessages(currentConv()); sendMessage(text, { retry: true, convId }); };
-  box.appendChild(retryBtn);
+  actions.appendChild(retryBtn);
+  box.appendChild(actions);
   messagesEl.appendChild(box);
 }
 
@@ -667,7 +743,10 @@ async function sendMessage(text, { retry = false, convId = activeId } = {}) {
       delete streams[convId];
     } else {
       const msg = e.message || '';
-      const needsLogin = /Unauthorized \(401\)|expired credentials|no auth context|grok login|PermissionDenied|not logged in|unknown model id|Couldn't set model|Run 'grok models'/i.test(msg);
+      // Only real auth failures. Do NOT treat "unknown model id" / quota (402) as
+      // login — those were misclassified and made Sign-in look broken after OAuth.
+      const needsLogin = /AuthorizationRequired|Unauthorized \(401\)|expired credentials|no auth context|PermissionDenied|not logged in|not authenticated/i.test(msg) &&
+        !/unknown model id|Couldn't set model|402|Payment Required|balance exhausted/i.test(msg);
       st.error = { msg: friendlyGrokError(msg), needsLogin, text };
     }
   } finally {
@@ -929,65 +1008,65 @@ function renderChatInfo() {
   const el = document.getElementById('chat-info');
   if (!el) return;
   el.innerHTML = '';
+
+  const account = document.createElement('div');
+  account.className = 'info-account';
+  const who = document.createElement('p');
+  who.className = 'info-signed';
+  who.textContent = 'Checking sign-in…';
+  account.appendChild(who);
+  el.appendChild(account);
+  fetch('/api/grok/login', { cache: 'no-store' })
+    .then((r) => r.json())
+    .then((st) => {
+      const signed = !!(st.logged_in || st.ok);
+      who.textContent = signed
+        ? (st.account ? `Signed in as ${st.account}` : 'Signed in to Grok')
+        : 'Not signed in';
+      if (!signed) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'info-copy';
+        btn.textContent = 'Sign in';
+        btn.addEventListener('click', async () => {
+          btn.disabled = true;
+          const ok = await startGrokBrowserLogin(who);
+          btn.disabled = false;
+          if (ok) renderChatInfo();
+        });
+        account.appendChild(btn);
+      }
+    })
+    .catch(() => { who.textContent = 'Not signed in'; });
+
   const conv = conversations.find((c) => c.id === activeId);
-  if (!conv) {
-    const e = document.createElement('div');
-    e.className = 'info-empty';
-    e.textContent = 'No active chat.';
-    el.appendChild(e);
-    return;
+  if (conv) {
+    const rows = [['Model', modelLabel(getConvModel(conv.id), models)]];
+    const sched = getScheduleForConv(conv.id);
+    if (sched) rows.push(['Scheduled', sched.label || 'Task']);
+    const dl = document.createElement('dl');
+    dl.className = 'info-grid';
+    for (const [k, v] of rows) {
+      const dt = document.createElement('dt'); dt.textContent = k;
+      const dd = document.createElement('dd'); dd.textContent = v;
+      dl.append(dt, dd);
+    }
+    el.appendChild(dl);
+    if (sched) {
+      const taskLink = document.createElement('a');
+      taskLink.className = 'info-settings-link';
+      taskLink.href = '/schedules?id=' + encodeURIComponent(sched.id);
+      taskLink.textContent = 'Edit this task →';
+      el.appendChild(taskLink);
+    }
   }
-  const sid = conv.session_id || '';
-  const sched = getScheduleForConv(conv.id);
-  const rows = [
-    ['Model', modelLabel(getConvModel(conv.id), models)],
-    ['Messages', String((conv.messages || []).length)],
-    ['Conversation ID', conv.id],
-    ['Grok session', sid || '— (send a message first)'],
-  ];
-  if (sched) {
-    rows.splice(1, 0, ['Scheduled task', sched.label || sched.id]);
-  }
-  const dl = document.createElement('dl');
-  dl.className = 'info-grid';
-  for (const [k, v] of rows) {
-    const dt = document.createElement('dt'); dt.textContent = k;
-    const dd = document.createElement('dd'); dd.textContent = v;
-    dl.append(dt, dd);
-  }
-  el.appendChild(dl);
-  if (sid) {
-    const cmd = `grok -r ${sid}`;
-    const actions = document.createElement('div');
-    actions.className = 'info-actions';
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.className = 'info-copy';
-    btn.textContent = 'Copy CLI resume';
-    btn.addEventListener('click', () => {
-      navigator.clipboard?.writeText(cmd);
-      btn.textContent = 'Copied ✓';
-      setTimeout(() => { btn.textContent = 'Copy CLI resume'; }, 1500);
-    });
-    const code = document.createElement('code');
-    code.className = 'info-cmd';
-    code.textContent = cmd;
-    actions.append(btn, code);
-    el.appendChild(actions);
-  }
-  if (sched) {
-    const taskLink = document.createElement('a');
-    taskLink.className = 'info-settings-link';
-    taskLink.href = '/schedules?id=' + encodeURIComponent(sched.id);
-    taskLink.textContent = 'Open task settings (schedule, prompt, history) →';
-    el.appendChild(taskLink);
-  }
+
   const settingsLink = document.createElement('a');
   settingsLink.className = 'info-settings-link';
   settingsLink.href = '/settings';
   settingsLink.target = '_blank';
   settingsLink.rel = 'noopener';
-  settingsLink.textContent = 'Open Grok settings (models, max-turns, toolbar) →';
+  settingsLink.textContent = 'Settings →';
   el.appendChild(settingsLink);
 }
 

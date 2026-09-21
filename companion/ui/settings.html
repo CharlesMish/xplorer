@@ -21,9 +21,15 @@
     <div class="settings-main">
       <section class="settings-pane active" data-pane="general">
         <header class="settings-head">
-          <h1>Grok settings</h1>
-          <p>Defaults for chat, search, and browser integration. Stored in <code>~/.xplorer/grok_settings.json</code>.</p>
+          <h1>Settings</h1>
+          <p>Sign in, pick a model, and choose what opens when Xplor starts.</p>
         </header>
+
+        <section class="settings-card" id="account-card">
+          <h2>Grok account</h2>
+          <p id="account-status" class="settings-hint">Checking…</p>
+          <button type="button" id="account-signin" class="settings-btn settings-btn-primary" hidden>Sign in</button>
+        </section>
 
         <section class="settings-card">
           <h2>Home &amp; navigation</h2>
@@ -46,18 +52,16 @@
           <label class="settings-field">
             <span>Web search model</span>
             <select id="search-model"></select>
-            <small>Web and video search use Grok Build for tool access.</small>
+
           </label>
         </section>
 
         <section class="settings-card">
-          <h2>Grok Build agent</h2>
+          <h2>Replies</h2>
           <label class="settings-field">
-            <span>Max turns per request</span>
+            <span>How long Grok can work on one reply</span>
             <input type="number" id="max-turns" min="1" max="200" step="1">
-            <small>How many tool/reasoning steps the agent may take to answer one
-              message. Raise it for bigger multi-step tasks (open &amp; organize
-              many tabs); lower it to cap cost/latency. 1–200, default 50.</small>
+            <small>Higher lets Grok take more steps. Lower is faster. Default 50.</small>
           </label>
         </section>
 
@@ -71,17 +75,6 @@
               <option value="dark">Dark</option>
             </select>
           </label>
-        </section>
-
-        <section class="settings-card settings-readonly">
-          <h2>Integration</h2>
-          <dl class="settings-dl">
-            <dt>Companion</dt><dd id="info-companion">—</dd>
-            <dt>Agent gateway</dt><dd id="info-gateway">—</dd>
-            <dt>Grok CLI</dt><dd id="info-grok">—</dd>
-            <dt>CDP</dt><dd id="info-cdp">—</dd>
-          </dl>
-          <p class="settings-hint">Agents discover the gateway via <code>~/.xplorer/gateway.json</code>. MCP: <code>xplorer_mcp.py</code> / <code>xbrowser_organize_tabs</code>.</p>
         </section>
 
         <section class="settings-card">
@@ -101,7 +94,7 @@
       <section class="settings-pane" data-pane="bookmarks" hidden>
         <header class="settings-head">
           <h1>Bookmarks</h1>
-          <p>The always-open tabs in the native <strong>Bookmarks</strong> group. Add, edit, reorder (▲▼), and remove them; changes apply immediately in Xplor. Stored under <code>bookmarks</code> in <code>~/.xplorer/grok_settings.json</code>.</p>
+          <p>Tabs that stay open in the Bookmarks group. Add, rename, reorder, or remove them. Changes show up in the sidebar right away.</p>
         </header>
 
         <section class="settings-card">

@@ -6,6 +6,7 @@
 #include "build/build_config.h"
 
 #if BUILDFLAG(IS_POSIX)
+#include <errno.h>
 #include <fcntl.h>
 #include <unistd.h>
 #endif
@@ -46,9 +47,11 @@
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/functional/bind.h"
 #include "base/synchronization/lock.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/task/thread_pool.h"
+#include "base/threading/platform_thread.h"
 #include "base/time/time.h"
 #include "chrome/browser/agent_gateway/app_store.h"
 #include "chrome/browser/agent_gateway/browser_api.h"
@@ -61,8 +64,11 @@
 #include "chrome/browser/agent_gateway/xplorer_paths.h"
 #include "chrome/browser/grok_companion/grok_companion_util.h"
 #include "chrome/browser/agent_gateway/tab_screenshot.h"
+#include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
+#include "chrome/browser/ui/navigator/browser_navigator.h"
+#include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "content/public/browser/browser_task_traits.h"
 
@@ -80,66 +86,98 @@ constexpr char kGrokBin[] = "grok";
 
 }  // namespace
 
-base::FilePath ResolveGrokBinary() {
-  static const base::NoDestructor<base::FilePath> cached([] {
-    if (const char* env = getenv("GROK_BIN"); env && *env) {
-      base::FilePath from_env = base::FilePath::FromUTF8Unsafe(env);
-      if (base::PathExists(from_env))
-        return from_env;
-    }
-    base::FilePath home;
-    if (base::PathService::Get(base::DIR_HOME, &home) && home.empty())
-      home = base::FilePath();
-    if (home.empty()) {
-      if (const char* h = getenv("HOME"); h && *h)
-        home = base::FilePath::FromUTF8Unsafe(h);
-    }
-    if (!home.empty()) {
-      std::string companion_json;
-      if (base::ReadFileToString(
-              xplorer_paths::Resolve("companion.json"),
-              &companion_json)) {
-        if (auto parsed =
-                base::JSONReader::ReadDict(companion_json, base::JSON_PARSE_RFC)) {
-          if (const std::string* bin = parsed->FindString("grok_bin");
-              bin && !bin->empty()) {
-            base::FilePath from_cfg = base::FilePath::FromUTF8Unsafe(*bin);
-            if (base::PathExists(from_cfg))
-              return from_cfg;
-          }
+// Discover the grok CLI without following versioned download symlinks.
+//
+// IMPORTANT: do NOT call MakeAbsoluteFilePath() on candidates under
+// ~/.grok/bin/ — that realpath()s the shim to
+// ~/.grok/downloads/grok-<version>-…, which breaks the moment the user
+// upgrades Grok (old version deleted, symlink retargeted). Keep the stable
+// shim path so upgrades keep working without restarting Xplor… and so we
+// don't pin a dead path into companion.json via WriteCompanionDiscovery.
+base::FilePath ResolveGrokBinaryOnce() {
+  if (const char* env = getenv("GROK_BIN"); env && *env) {
+    base::FilePath from_env = base::FilePath::FromUTF8Unsafe(env);
+    if (base::PathExists(from_env))
+      return from_env;
+  }
+  base::FilePath home;
+  if (base::PathService::Get(base::DIR_HOME, &home) && home.empty())
+    home = base::FilePath();
+  if (home.empty()) {
+    if (const char* h = getenv("HOME"); h && *h)
+      home = base::FilePath::FromUTF8Unsafe(h);
+  }
+  if (!home.empty()) {
+    std::string companion_json;
+    if (base::ReadFileToString(xplorer_paths::Resolve("companion.json"),
+                               &companion_json)) {
+      if (auto parsed =
+              base::JSONReader::ReadDict(companion_json, base::JSON_PARSE_RFC)) {
+        if (const std::string* bin = parsed->FindString("grok_bin");
+            bin && !bin->empty()) {
+          base::FilePath from_cfg = base::FilePath::FromUTF8Unsafe(*bin);
+          // Reject dead pins left by older Xplor builds that wrote the
+          // realpath of a versioned download into companion.json.
+          if (base::PathExists(from_cfg))
+            return from_cfg;
         }
       }
+    }
 #if BUILDFLAG(IS_WIN)
-      // grok is an npm CLI; a global install lands under %APPDATA%\npm
-      // (grok.cmd shim + grok.exe); `grok login` may also drop a private copy.
-      for (const wchar_t* rel : {L"AppData\\Roaming\\npm\\grok.cmd",
-                                 L"AppData\\Roaming\\npm\\grok.exe",
-                                 L".grok\\bin\\grok.exe",
-                                 L".grok\\bin\\grok.cmd"}) {
-        base::FilePath candidate = home.Append(rel);
-        if (base::PathExists(candidate))
-          return base::MakeAbsoluteFilePath(candidate);
-      }
-#else
-      for (const char* rel : {".grok/bin/grok", ".local/bin/grok"}) {
-        base::FilePath candidate = home.AppendASCII(rel);
-        if (base::PathExists(candidate))
-          return base::MakeAbsoluteFilePath(candidate);
-      }
-#endif
-    }
-#if !BUILDFLAG(IS_WIN)
-    for (const char* abs :
-         {"/opt/homebrew/bin/grok", "/usr/local/bin/grok"}) {
-      base::FilePath candidate(abs);
+    // grok is an npm CLI; a global install lands under %APPDATA%\npm
+    // (grok.cmd shim + grok.exe); `grok login` may also drop a private copy.
+    for (const wchar_t* rel : {L"AppData\\Roaming\\npm\\grok.cmd",
+                               L"AppData\\Roaming\\npm\\grok.exe",
+                               L".grok\\bin\\grok.exe",
+                               L".grok\\bin\\grok.cmd"}) {
+      base::FilePath candidate = home.Append(rel);
       if (base::PathExists(candidate))
-        return candidate;
+        return candidate;  // keep shim path; do not realpath
+    }
+#else
+    for (const char* rel : {".grok/bin/grok", ".local/bin/grok"}) {
+      base::FilePath candidate = home.AppendASCII(rel);
+      if (base::PathExists(candidate))
+        return candidate;  // keep shim path; do not realpath
     }
 #endif
-    // Bare name: base::LaunchProcess resolves it via PATH (CreateProcess
-    // appends .exe on Windows), so a PATH-installed grok still launches.
-    return base::FilePath::FromASCII(kGrokBin);
-  }());
+  }
+#if !BUILDFLAG(IS_WIN)
+  for (const char* abs :
+       {"/opt/homebrew/bin/grok", "/usr/local/bin/grok"}) {
+    base::FilePath candidate(abs);
+    if (base::PathExists(candidate))
+      return candidate;
+  }
+#endif
+  // Bare name: base::LaunchProcess resolves it via PATH (CreateProcess
+  // appends .exe on Windows), so a PATH-installed grok still launches.
+  return base::FilePath::FromASCII(kGrokBin);
+}
+
+// Process-lifetime cache. Re-resolved when the path vanishes (Grok upgrades)
+// or when GetGrokInstallStatus forces a refresh after a failed --version.
+base::FilePath* GrokBinaryCache() {
+  static base::NoDestructor<base::FilePath> cached(ResolveGrokBinaryOnce());
+  return cached.get();
+}
+
+base::FilePath ResolveGrokBinary() {
+  base::FilePath* cached = GrokBinaryCache();
+  const base::FilePath bare = base::FilePath::FromASCII(kGrokBin);
+  // Re-resolve if the cached path vanished (typical after a Grok CLI upgrade
+  // that deleted the previous download). Bare "grok" is always kept —
+  // LaunchProcess looks it up on PATH.
+  if (*cached != bare && !base::PathExists(*cached))
+    *cached = ResolveGrokBinaryOnce();
+  return *cached;
+}
+
+// Force a fresh discovery and update the cache. Used when --version fails on
+// the cached path (stale realpath of a deleted Grok download).
+base::FilePath RefreshGrokBinary() {
+  base::FilePath* cached = GrokBinaryCache();
+  *cached = ResolveGrokBinaryOnce();
   return *cached;
 }
 
@@ -419,8 +457,13 @@ void SaveSessions(const base::DictValue& data) {
 }
 
 constexpr char kDefaultModel[] = "grok-composer-2.5-fast";
+// Historical default for browser/search tools. Grok CLI ≥0.2 no longer exposes
+// "grok-build" as a model id (it 400s with "unknown model id"). Keep the
+// constant for settings migration, but MapModelId() rewrites it at resolve time.
 constexpr char kSearchModel[] = "grok-build";
 constexpr char kComposerModel[] = "grok-composer-2.5-fast";
+// Current CLI default (see `grok models`) — used when remapping retired ids.
+constexpr char kFallbackCloudModel[] = "grok-4.5";
 constexpr char kSearchHomeBuild[] = "build";
 constexpr char kSearchHomeWeb[] = "web";
 constexpr char kSearchHomeWiki[] = "wiki";
@@ -488,11 +531,19 @@ void SaveBookmarkSettings(base::ListValue bookmarks) {
   SaveSettings(settings);
 }
 
+// Rewrite retired / empty model ids so we never hand the CLI a name it rejects
+// with "unknown model id" (which the UI used to mis-read as "please log in").
+std::string MapModelId(const std::string& model) {
+  if (model.empty() || model == kSearchModel /* "grok-build" */)
+    return kFallbackCloudModel;
+  return model;
+}
+
 std::string GetConfiguredModel() {
   base::DictValue settings = LoadSettings();
   if (const std::string* model = settings.FindString("model");
       model && !model->empty()) {
-    return *model;
+    return MapModelId(*model);
   }
   return kDefaultModel;
 }
@@ -507,9 +558,9 @@ std::string GetConfiguredSearchModel() {
   base::DictValue settings = LoadSettings();
   if (const std::string* model = settings.FindString("search_model");
       model && !model->empty()) {
-    return *model;
+    return MapModelId(*model);
   }
-  return kSearchModel;
+  return MapModelId(kSearchModel);
 }
 
 void SetConfiguredSearchModel(const std::string& model) {
@@ -596,21 +647,21 @@ bool SearchModeNeedsWebTools(const std::string& mode) {
   return mode == "web" || mode == "videos";
 }
 
-// Composer has no web search; route web/video search through grok-build.
+// Composer has no web search; route web/video search to a cloud model that does.
 std::string ResolveSearchModel(const std::string& mode,
                                const std::string* request_model) {
-  std::string model =
+  std::string model = MapModelId(
       request_model && !request_model->empty() ? *request_model
-                                               : GetConfiguredSearchModel();
+                                               : GetConfiguredSearchModel());
   // XPLORER: only grok-composer has in-context vision; image search must use it
-  // regardless of the configured/default search model (grok-build is blind to
-  // images — it treats them as a missing file attachment and fails).
+  // regardless of the configured/default search model.
   if (mode == "images")
     return kComposerModel;
-  if (SearchModeNeedsWebTools(mode) && model == kComposerModel)
-    return kSearchModel;
-  if (SearchModeNeedsWebTools(mode) && model == kDefaultModel)
-    return kSearchModel;
+  // Composer is tool-less for web search — use the cloud fallback instead of
+  // the retired "grok-build" id.
+  if (SearchModeNeedsWebTools(mode) &&
+      (model == kComposerModel || model == kDefaultModel))
+    return kFallbackCloudModel;
   return model;
 }
 
@@ -628,19 +679,20 @@ bool MessageNeedsBrowserTools(const std::string& message) {
   return false;
 }
 
-// Honor the model the user picked in the sidebar. The browser MCP tools live
-// under the grok-build-plan agent, which only accepts grok-build; Composer is
-// hard-locked to the tool-less 'cursor' agent. We never auto-switch the model
-// within a conversation — grok locks a session to one agent and rejects a
-// mid-session switch in either direction — so the UI keeps each conversation on
-// one model (and starts a fresh chat when the user changes it). Default to
-// grok-build so a brand-new chat can drive the browser out of the box; an
-// explicit Composer pick is respected for fast, tool-less Q&A.
+// Honor the model the user picked in the sidebar (or the configured default).
+// We never auto-switch the model mid-conversation — grok locks a session to one
+// agent and rejects a mid-session switch — so the UI keeps each conversation on
+// one model (and starts a fresh chat when the user changes it).
+//
+// NOTE: historically this hard-coded "grok-build" so new chats got browser MCP
+// tools. That model id was removed from the Grok CLI; forcing it made every
+// message fail with "unknown model id", which the UI misclassified as "please
+// sign in". Resolve from settings / request and MapModelId() the result.
 std::string ResolveChatModel(const std::string& /*message*/,
                              const std::string* request_model) {
   if (request_model && !request_model->empty())
-    return *request_model;
-  return kSearchModel;
+    return MapModelId(*request_model);
+  return GetConfiguredModel();
 }
 
 const char* ChatRulesForMessage(const std::string& message) {
@@ -744,24 +796,311 @@ base::CommandLine MaybeWrapForWindowsShell(const base::CommandLine& cmd) {
 }
 #endif  // BUILDFLAG(IS_WIN)
 
+// ---- In-browser Grok OAuth login (same idea as AskHere / Xnative) ---------
+// Spawns `grok login --oauth`, which prints an auth.x.ai URL and listens on a
+// loopback callback. We surface the URL and open it in an Xplor tab so the
+// user never has to drop to a terminal.
+struct GrokLoginState {
+  base::Lock lock;
+  bool running = false;
+  bool done = false;
+  bool ok = false;
+  std::string url;
+  std::string error;
+  std::string message;
+};
+
+GrokLoginState& LoginState() {
+  static base::NoDestructor<GrokLoginState> s;
+  return *s;
+}
+
+// Pull the first https://auth.x.ai… URL out of CLI output.
+std::string ExtractGrokAuthUrl(const std::string& text) {
+  static constexpr const char* kPrefixes[] = {
+      "https://auth.x.ai",
+      "http://auth.x.ai",
+  };
+  for (const char* prefix : kPrefixes) {
+    size_t pos = text.find(prefix);
+    if (pos == std::string::npos)
+      continue;
+    size_t end = pos;
+    while (end < text.size() &&
+           !base::IsAsciiWhitespace(static_cast<unsigned char>(text[end])) &&
+           text[end] != '"' && text[end] != '\'') {
+      ++end;
+    }
+    // Trim trailing punctuation the CLI sometimes leaves on the line.
+    while (end > pos &&
+           (text[end - 1] == '.' || text[end - 1] == ')' ||
+            text[end - 1] == ',' || text[end - 1] == ']')) {
+      --end;
+    }
+    return text.substr(pos, end - pos);
+  }
+  return {};
+}
+
+void OpenUrlInXplorTab(const std::string& url) {
+  if (url.empty())
+    return;
+  content::GetUIThreadTaskRunner({})->PostTask(
+      FROM_HERE, base::BindOnce(
+                     [](std::string u) {
+                       Profile* profile = ProfileManager::GetLastUsedProfile();
+                       if (!profile)
+                         return;
+                       NavigateParams params(profile, GURL(u),
+                                             ui::PAGE_TRANSITION_LINK);
+                       params.disposition =
+                           WindowOpenDisposition::NEW_FOREGROUND_TAB;
+                       Navigate(&params);
+                     },
+                     url));
+}
+
+// True when ~/.grok/auth.json looks like a usable OAuth/API session.
+bool GrokAuthFileLooksValid() {
+  base::FilePath home;
+  if (!base::PathService::Get(base::DIR_HOME, &home) || home.empty()) {
+    if (const char* h = getenv("HOME"); h && *h)
+      home = base::FilePath::FromUTF8Unsafe(h);
+  }
+  if (home.empty())
+    return false;
+  base::FilePath auth = home.AppendASCII(".grok").AppendASCII("auth.json");
+  std::string contents;
+  if (!base::ReadFileToString(auth, &contents) || contents.size() < 20)
+    return false;
+  // OAuth stores access/refresh tokens; API-key flows may still write a
+  // credentials blob. Either is enough to attempt a request.
+  return contents.find("access_token") != std::string::npos ||
+         contents.find("refresh_token") != std::string::npos ||
+         contents.find("api_key") != std::string::npos ||
+         contents.find("XAI_API_KEY") != std::string::npos;
+}
+
+std::string LoadGrokAccountLabel();
+
+base::DictValue GrokLoginStatusDict() {
+  GrokLoginState& s = LoginState();
+  base::AutoLock lock(s.lock);
+  base::DictValue d;
+  d.Set("running", s.running);
+  d.Set("done", s.done);
+  d.Set("ok", s.ok);
+  d.Set("logged_in", GrokAuthFileLooksValid());
+  const std::string account = LoadGrokAccountLabel();
+  if (!account.empty())
+    d.Set("account", account);
+  if (!s.url.empty())
+    d.Set("url", s.url);
+  if (!s.error.empty())
+    d.Set("error", s.error);
+  if (!s.message.empty())
+    d.Set("message", s.message);
+  return d;
+}
+
+// Background worker: run `grok login --oauth`, open the consent URL in Xplor,
+// wait for the CLI to finish (callback on 127.0.0.1), update LoginState.
+void RunGrokLoginOAuthWorker() {
+  base::CommandLine cmd(ResolveGrokBinary());
+  cmd.AppendArg("login");
+  cmd.AppendArg("--oauth");
+
+  // Capture both stdout and stderr — the CLI prints the URL on either.
+  std::string output;
+  int exit_code = -1;
+  bool ran = false;
+#if BUILDFLAG(IS_WIN)
+  base::CommandLine wrapped = MaybeWrapForWindowsShell(cmd);
+  ran = base::GetAppOutputWithExitCode(wrapped, &output, &exit_code);
+#else
+  // Prefer a pipe that merges stderr so we see "Open this URL…" even when
+  // the CLI writes it to stderr. GetAppOutput only captures stdout.
+  int pipe_fds[2] = {-1, -1};
+  if (pipe(pipe_fds) == 0) {
+    const int devnull = open("/dev/null", O_RDWR);
+    base::LaunchOptions options;
+    options.fds_to_remap.emplace_back(pipe_fds[1], STDOUT_FILENO);
+    options.fds_to_remap.emplace_back(pipe_fds[1], STDERR_FILENO);
+    if (devnull >= 0)
+      options.fds_to_remap.emplace_back(devnull, STDIN_FILENO);
+    base::Process process = base::LaunchProcess(cmd, options);
+    close(pipe_fds[1]);
+    if (devnull >= 0)
+      close(devnull);
+    if (process.IsValid()) {
+      ran = true;
+      // Non-blocking so we can enforce a wall-clock timeout while the CLI
+      // waits on the OAuth loopback callback.
+      fcntl(pipe_fds[0], F_SETFL, O_NONBLOCK);
+      char buf[1024];
+      bool opened_tab = false;
+      bool child_exited = false;
+      const base::TimeTicks deadline =
+          base::TimeTicks::Now() + base::Minutes(10);
+      // base::Process has no IsRunning(); probe with a zero-timeout wait.
+      auto still_running = [&]() -> bool {
+        if (child_exited)
+          return false;
+        int code = -1;
+        if (process.WaitForExitWithTimeout(base::TimeDelta(), &code)) {
+          exit_code = code;
+          child_exited = true;
+          return false;
+        }
+        return true;
+      };
+      while (base::TimeTicks::Now() < deadline) {
+        const int n = HANDLE_EINTR(read(pipe_fds[0], buf, sizeof(buf)));
+        if (n > 0) {
+          output.append(buf, static_cast<size_t>(n));
+          if (!opened_tab) {
+            std::string url = ExtractGrokAuthUrl(output);
+            if (!url.empty()) {
+              {
+                base::AutoLock lock(LoginState().lock);
+                LoginState().url = url;
+                LoginState().message =
+                    "Complete sign-in in the browser tab, then return here.";
+              }
+              OpenUrlInXplorTab(url);
+              opened_tab = true;
+            }
+          }
+          continue;
+        }
+        if (n == 0) {
+          break;  // EOF — child closed the pipe.
+        }
+        // n < 0: EAGAIN / nothing ready yet.
+        if (!still_running()) {
+          while (true) {
+            const int m = HANDLE_EINTR(read(pipe_fds[0], buf, sizeof(buf)));
+            if (m <= 0)
+              break;
+            output.append(buf, static_cast<size_t>(m));
+          }
+          break;
+        }
+        base::PlatformThread::Sleep(base::Milliseconds(100));
+      }
+      if (still_running()) {
+        process.Terminate(/*exit_code=*/0, /*wait=*/false);
+        exit_code = -1;
+        {
+          base::AutoLock lock(LoginState().lock);
+          LoginState().error = "Sign-in timed out. Click Sign in to try again.";
+        }
+      } else if (!child_exited) {
+        process.WaitForExit(&exit_code);
+      }
+      close(pipe_fds[0]);
+    } else {
+      close(pipe_fds[0]);
+    }
+  } else {
+    ran = base::GetAppOutputWithExitCode(cmd, &output, &exit_code);
+  }
+#endif
+
+  // Fallback for Windows (or pipe failure): open any URL we got from output.
+  if (!output.empty()) {
+    std::string url = ExtractGrokAuthUrl(output);
+    if (!url.empty()) {
+      base::AutoLock lock(LoginState().lock);
+      if (LoginState().url.empty()) {
+        LoginState().url = url;
+        OpenUrlInXplorTab(url);
+      }
+    }
+  }
+
+  const bool ok = ran && exit_code == 0;
+  {
+    base::AutoLock lock(LoginState().lock);
+    LoginState().running = false;
+    LoginState().done = true;
+    LoginState().ok = ok;
+    if (ok) {
+      LoginState().message = "Signed in ✓";
+      LoginState().error.clear();
+    } else if (LoginState().error.empty()) {
+      LoginState().error =
+          ran ? "Sign-in did not complete. Try again."
+              : "Could not start Grok login. Is the Grok CLI installed?";
+      LoginState().message.clear();
+    }
+  }
+}
+
+// Kick off OAuth login if not already running. Returns current status dict.
+base::DictValue StartGrokLoginOAuth() {
+  {
+    base::AutoLock lock(LoginState().lock);
+    if (LoginState().running)
+      return GrokLoginStatusDict();
+    LoginState().running = true;
+    LoginState().done = false;
+    LoginState().ok = false;
+    LoginState().url.clear();
+    LoginState().error.clear();
+    LoginState().message = "Opening browser for sign-in…";
+  }
+  base::ThreadPool::PostTask(FROM_HERE,
+                             {base::MayBlock(), base::TaskPriority::USER_VISIBLE,
+                              base::TaskShutdownBehavior::CONTINUE_ON_SHUTDOWN},
+                             base::BindOnce(&RunGrokLoginOAuthWorker));
+  return GrokLoginStatusDict();
+}
+
 // Whether the grok CLI ("Grok Build") is actually runnable — via an npm shim,
 // PATH, or an absolute path. The companion UI calls this to prompt the user to
 // install Grok Build before creating/building apps (which shell out to grok).
 // Runs `<grok> --version`; a clean exit means it's installed. Cross-platform.
+//
+// On failure, re-resolves the binary once: the process may still be holding a
+// cached realpath of a previous Grok download that was deleted by an upgrade.
 base::DictValue GetGrokInstallStatus() {
-  const base::FilePath bin = ResolveGrokBinary();
-  base::CommandLine cmd(bin);
-  cmd.AppendArg("--version");
+  auto try_version = [](const base::FilePath& bin, std::string* out,
+                        int* exit_code) -> bool {
+    if (bin.empty())
+      return false;
+    // Skip the probe when an absolute/relative path is gone — LaunchProcess
+    // on a missing file is noisy and slow. Bare "grok" is still worth trying
+    // (PATH lookup).
+    if (bin != base::FilePath::FromASCII(kGrokBin) && !base::PathExists(bin))
+      return false;
+    base::CommandLine cmd(bin);
+    cmd.AppendArg("--version");
 #if BUILDFLAG(IS_WIN)
-  cmd = MaybeWrapForWindowsShell(cmd);
+    cmd = MaybeWrapForWindowsShell(cmd);
 #endif
+    return base::GetAppOutputWithExitCode(cmd, out, exit_code);
+  };
+
+  base::FilePath bin = ResolveGrokBinary();
   std::string out;
   int exit_code = -1;
-  const bool ran = base::GetAppOutputWithExitCode(cmd, &out, &exit_code);
-  const bool installed = ran && exit_code == 0;
+  bool ran = try_version(bin, &out, &exit_code);
+  bool installed = ran && exit_code == 0;
+
+  if (!installed) {
+    // Force a fresh discovery (clears a stale cached realpath) and retry.
+    bin = RefreshGrokBinary();
+    out.clear();
+    exit_code = -1;
+    ran = try_version(bin, &out, &exit_code);
+    installed = ran && exit_code == 0;
+  }
+
   base::DictValue d;
   d.Set("installed", installed);
   d.Set("path", bin.AsUTF8Unsafe());
+  d.Set("logged_in", installed && GrokAuthFileLooksValid());
   if (installed) {
     std::string version =
         std::string(base::TrimWhitespaceASCII(out, base::TRIM_ALL));
@@ -2302,6 +2641,434 @@ base::CommandLine BuildPageSummarizeCommand(const std::string& url,
                               model, streaming, kChatRules);
 }
 
+// Sidebar chat talks to Grok's OAuth chat proxy directly. The access token is
+// the one `grok login --oauth` stored in ~/.grok/auth.json. No local grok
+// process, no leader socket, no Build harness session.
+constexpr char kGrokChatProxy[] =
+    "https://cli-chat-proxy.grok.com/v1/chat/completions";
+
+std::string LoadGrokAccountLabel() {
+  base::FilePath home;
+  if (!base::PathService::Get(base::DIR_HOME, &home) || home.empty()) {
+    if (const char* h = getenv("HOME"); h && *h)
+      home = base::FilePath::FromUTF8Unsafe(h);
+  }
+  if (home.empty())
+    return {};
+  std::string contents;
+  if (!base::ReadFileToString(
+          home.AppendASCII(".grok").AppendASCII("auth.json"), &contents))
+    return {};
+  std::optional<base::DictValue> root =
+      base::JSONReader::ReadDict(contents, base::JSON_PARSE_RFC);
+  if (!root)
+    return {};
+  std::string label;
+  for (auto [unused_name, value] : *root) {
+    if (!value.is_dict())
+      continue;
+    const std::string* email = value.GetDict().FindString("email");
+    const std::string* name = value.GetDict().FindString("first_name");
+    if (email && !email->empty())
+      label = *email;
+    else if (name && !name->empty())
+      label = *name;
+    if (!label.empty() && value.GetDict().FindString("refresh_token"))
+      break;
+  }
+  return label;
+}
+
+std::string LoadGrokOAuthAccessToken() {
+  base::FilePath home;
+  if (!base::PathService::Get(base::DIR_HOME, &home) || home.empty()) {
+    if (const char* h = getenv("HOME"); h && *h)
+      home = base::FilePath::FromUTF8Unsafe(h);
+  }
+  if (home.empty())
+    return {};
+  std::string contents;
+  if (!base::ReadFileToString(
+          home.AppendASCII(".grok").AppendASCII("auth.json"), &contents))
+    return {};
+  std::optional<base::DictValue> root =
+      base::JSONReader::ReadDict(contents, base::JSON_PARSE_RFC);
+  if (!root)
+    return {};
+  std::string token;
+  for (auto [unused_name, value] : *root) {
+    if (!value.is_dict())
+      continue;
+    const std::string* key = value.GetDict().FindString("key");
+    if (!key || key->empty())
+      continue;
+    token = *key;
+    if (value.GetDict().FindString("refresh_token"))
+      break;
+  }
+  return token;
+}
+
+base::FilePath CurlProgram() {
+#if BUILDFLAG(IS_WIN)
+  return base::FilePath(FILE_PATH_LITERAL("curl.exe"));
+#else
+  if (base::PathExists(base::FilePath("/usr/bin/curl")))
+    return base::FilePath("/usr/bin/curl");
+  return base::FilePath("curl");
+#endif
+}
+
+base::ListValue OAuthMessagesForConversation(const std::string& conv_id,
+                                            const std::string& rules,
+                                            const std::string& fallback_user) {
+  base::ListValue messages;
+  base::DictValue system;
+  system.Set("role", "system");
+  system.Set("content", rules);
+  messages.Append(std::move(system));
+  bool any = false;
+  base::DictValue data = LoadSessions();
+  if (base::ListValue* convs = data.FindList("conversations")) {
+    for (auto& v : *convs) {
+      if (!v.is_dict())
+        continue;
+      const std::string* id = v.GetDict().FindString("id");
+      if (!id || *id != conv_id)
+        continue;
+      if (base::ListValue* msgs = v.GetDict().FindList("messages")) {
+        for (auto& m : *msgs) {
+          if (!m.is_dict())
+            continue;
+          const std::string* role = m.GetDict().FindString("role");
+          const std::string* content = m.GetDict().FindString("content");
+          if (!role || !content || content->empty())
+            continue;
+          if (*role != "user" && *role != "assistant" && *role != "system")
+            continue;
+          base::DictValue item;
+          item.Set("role", *role);
+          item.Set("content", *content);
+          messages.Append(std::move(item));
+          any = true;
+        }
+      }
+      break;
+    }
+  }
+  if (!any && !fallback_user.empty()) {
+    base::DictValue item;
+    item.Set("role", "user");
+    item.Set("content", fallback_user);
+    messages.Append(std::move(item));
+  }
+  return messages;
+}
+
+std::string DeltaTextFromChatChunk(const base::DictValue& chunk) {
+  const base::ListValue* choices = chunk.FindList("choices");
+  if (!choices || choices->empty() || !(*choices)[0].is_dict())
+    return {};
+  const base::DictValue& choice = (*choices)[0].GetDict();
+  if (const base::DictValue* delta = choice.FindDict("delta")) {
+    if (const std::string* content = delta->FindString("content"))
+      return *content;
+  }
+  if (const base::DictValue* message = choice.FindDict("message")) {
+    if (const std::string* content = message->FindString("content"))
+      return *content;
+  }
+  return {};
+}
+
+// Streams one sidebar reply from the OAuth chat proxy. Emits the same NDJSON
+// the companion UI already understands ({type:text}, then {type:result}).
+void PumpGrokOAuthChat(
+    net::HttpServer* server,
+    scoped_refptr<base::SingleThreadTaskRunner> io_task_runner,
+    int connection_id,
+    std::string conv_id,
+    std::string message,
+    std::string model,
+    std::string rules) {
+  const std::string token = LoadGrokOAuthAccessToken();
+  if (token.empty()) {
+    io_task_runner->PostTask(
+        FROM_HERE,
+        base::BindOnce(&SendStreamError, server, connection_id,
+                       "Sign in to Grok to chat. Click Sign in."));
+    return;
+  }
+  if (model.empty())
+    model = "grok-build";
+
+  base::DictValue body;
+  body.Set("model", model);
+  body.Set("stream", true);
+  body.Set("messages",
+           OAuthMessagesForConversation(conv_id, rules, message));
+  std::string json;
+  base::JSONWriter::Write(body, &json);
+  base::FilePath temp_dir;
+  if (!base::GetTempDir(&temp_dir))
+    temp_dir = base::FilePath("/tmp");
+  base::FilePath body_path =
+      temp_dir.AppendASCII("xplorer-grok-" + conv_id + ".json");
+  if (!base::WriteFile(body_path, json)) {
+    io_task_runner->PostTask(
+        FROM_HERE, base::BindOnce(&SendStreamError, server, connection_id,
+                                  "Could not write the Grok request."));
+    return;
+  }
+
+  base::CommandLine cmd(CurlProgram());
+  cmd.AppendArg("-sS");
+  cmd.AppendArg("-N");
+  cmd.AppendArg("--max-time");
+  cmd.AppendArg("180");
+  cmd.AppendArg("-X");
+  cmd.AppendArg("POST");
+  cmd.AppendArg(kGrokChatProxy);
+  cmd.AppendArg("-H");
+  cmd.AppendArg("Authorization: Bearer " + token);
+  cmd.AppendArg("-H");
+  cmd.AppendArg("X-XAI-Token-Auth: xai-grok-cli");
+  cmd.AppendArg("-H");
+  cmd.AppendArg("x-grok-model-override: " + model);
+  cmd.AppendArg("-H");
+  cmd.AppendArg("x-grok-client-version: 1.0.36");
+  cmd.AppendArg("-H");
+  cmd.AppendArg("User-Agent: grok-cli/1.0.36");
+  cmd.AppendArg("-H");
+  cmd.AppendArg("Content-Type: application/json");
+  cmd.AppendArg("--data-binary");
+  cmd.AppendArg("@" + body_path.AsUTF8Unsafe());
+
+  std::optional<GrokStdoutProcess> io = LaunchGrokStdoutProcess(cmd);
+  base::DeleteFile(body_path);
+  if (!io.has_value()) {
+    io_task_runner->PostTask(
+        FROM_HERE, base::BindOnce(&SendStreamError, server, connection_id,
+                                  "Could not reach Grok (curl failed to start)."));
+    return;
+  }
+  RegisterActiveRun(conv_id, io->process.Pid());
+  io_task_runner->PostTask(
+      FROM_HERE, base::BindOnce(&BeginNdjsonStreamWithMeta, server,
+                                connection_id, model, "chat"));
+
+  std::string buffer;
+  std::string full_text;
+  std::string http_error;
+  char read_buf[4096];
+  while (true) {
+    if (!IsActiveRun(conv_id)) {
+      io->process.Terminate(/*exit_code=*/0, /*wait=*/false);
+      break;
+    }
+#if BUILDFLAG(IS_WIN)
+    DWORD win_read = 0;
+    if (!::ReadFile(io->read_handle.Get(), read_buf, sizeof(read_buf),
+                    &win_read, nullptr) ||
+        win_read == 0)
+      break;
+    int n = static_cast<int>(win_read);
+#else
+    int n = HANDLE_EINTR(
+        read(io->read_file.GetPlatformFile(), read_buf, sizeof(read_buf)));
+    if (n <= 0)
+      break;
+#endif
+    buffer.append(read_buf, n);
+    size_t newline = std::string::npos;
+    while ((newline = buffer.find('\n')) != std::string::npos) {
+      std::string line = buffer.substr(0, newline);
+      buffer.erase(0, newline + 1);
+      base::TrimWhitespaceASCII(line, base::TRIM_ALL, &line);
+      if (line.empty())
+        continue;
+      std::string payload = line;
+      if (base::StartsWith(payload, "data:"))
+        payload = std::string(base::TrimWhitespaceASCII(
+            payload.substr(5), base::TRIM_ALL));
+      if (payload == "[DONE]")
+        continue;
+      if (payload.empty() || payload[0] != '{')
+        continue;
+      auto parsed = base::JSONReader::ReadDict(payload, base::JSON_PARSE_RFC);
+      if (!parsed)
+        continue;
+      if (const base::DictValue* err = parsed->FindDict("error")) {
+        if (const std::string* msg = err->FindString("message"))
+          http_error = *msg;
+        continue;
+      }
+      const std::string piece = DeltaTextFromChatChunk(*parsed);
+      if (piece.empty())
+        continue;
+      full_text += piece;
+      base::DictValue text_evt;
+      text_evt.Set("type", "text");
+      text_evt.Set("data", piece);
+      std::string out;
+      base::JSONWriter::Write(text_evt, &out);
+      out.push_back('\n');
+      io_task_runner->PostTask(
+          FROM_HERE, base::BindOnce(&SendHttpChunk, server, connection_id,
+                                    std::move(out)));
+    }
+  }
+  int exit_code = -1;
+  io->process.WaitForExit(&exit_code);
+  UnregisterActiveRun(conv_id);
+
+  if (full_text.empty() && !http_error.empty()) {
+    base::DictValue err;
+    err.Set("type", "error");
+    err.Set("error", http_error);
+    std::string err_line;
+    base::JSONWriter::Write(err, &err_line);
+    err_line.push_back('\n');
+    io_task_runner->PostTask(
+        FROM_HERE, base::BindOnce(&SendHttpChunk, server, connection_id,
+                                  std::move(err_line)));
+    io_task_runner->PostTask(
+        FROM_HERE, base::BindOnce(&EndNdjsonStream, server, connection_id));
+    return;
+  }
+
+  if (!conv_id.empty() && !full_text.empty())
+    SaveChatAssistantReply(conv_id, full_text, /*session_id=*/"");
+  base::DictValue result_event;
+  result_event.Set("type", "result");
+  result_event.Set("model", model);
+  result_event.Set("model_label", ModelDisplayName(model));
+  result_event.Set("text", full_text);
+  result_event.Set("reply", full_text);
+  std::string result_line;
+  base::JSONWriter::Write(result_event, &result_line);
+  result_line.push_back('\n');
+  io_task_runner->PostTask(
+      FROM_HERE, base::BindOnce(&SendHttpChunk, server, connection_id,
+                                std::move(result_line)));
+  io_task_runner->PostTask(
+      FROM_HERE, base::BindOnce(&EndNdjsonStream, server, connection_id));
+}
+
+base::DictValue RunOAuthChatBlocking(const std::string& message,
+                                     const std::string& model,
+                                     const std::string& rules) {
+  const std::string token = LoadGrokOAuthAccessToken();
+  base::DictValue out;
+  if (token.empty()) {
+    out.Set("error", "Sign in to Grok to chat. Click Sign in.");
+    return out;
+  }
+  std::string use_model = model.empty() ? "grok-build" : model;
+  base::ListValue messages;
+  base::DictValue system;
+  system.Set("role", "system");
+  system.Set("content", rules);
+  messages.Append(std::move(system));
+  base::DictValue user;
+  user.Set("role", "user");
+  user.Set("content", message);
+  messages.Append(std::move(user));
+  base::DictValue body;
+  body.Set("model", use_model);
+  body.Set("stream", true);
+  body.Set("messages", std::move(messages));
+  std::string json;
+  base::JSONWriter::Write(body, &json);
+  base::FilePath temp_dir;
+  if (!base::GetTempDir(&temp_dir))
+    temp_dir = base::FilePath("/tmp");
+  base::FilePath body_path = temp_dir.AppendASCII("xplorer-grok-once.json");
+  if (!base::WriteFile(body_path, json)) {
+    out.Set("error", "Could not write the Grok request.");
+    return out;
+  }
+  base::CommandLine cmd(CurlProgram());
+  cmd.AppendArg("-sS");
+  cmd.AppendArg("-N");
+  cmd.AppendArg("--max-time");
+  cmd.AppendArg("60");
+  cmd.AppendArg("-X");
+  cmd.AppendArg("POST");
+  cmd.AppendArg(kGrokChatProxy);
+  cmd.AppendArg("-H");
+  cmd.AppendArg("Authorization: Bearer " + token);
+  cmd.AppendArg("-H");
+  cmd.AppendArg("X-XAI-Token-Auth: xai-grok-cli");
+  cmd.AppendArg("-H");
+  cmd.AppendArg("x-grok-model-override: " + use_model);
+  cmd.AppendArg("-H");
+  cmd.AppendArg("x-grok-client-version: 1.0.36");
+  cmd.AppendArg("-H");
+  cmd.AppendArg("User-Agent: grok-cli/1.0.36");
+  cmd.AppendArg("-H");
+  cmd.AppendArg("Content-Type: application/json");
+  cmd.AppendArg("--data-binary");
+  cmd.AppendArg("@" + body_path.AsUTF8Unsafe());
+  std::optional<GrokStdoutProcess> io = LaunchGrokStdoutProcess(cmd);
+  base::DeleteFile(body_path);
+  if (!io.has_value()) {
+    out.Set("error", "Could not reach Grok.");
+    return out;
+  }
+  std::string buffer;
+  std::string full_text;
+  std::string http_error;
+  char read_buf[4096];
+  while (true) {
+#if BUILDFLAG(IS_WIN)
+    DWORD win_read = 0;
+    if (!::ReadFile(io->read_handle.Get(), read_buf, sizeof(read_buf),
+                    &win_read, nullptr) ||
+        win_read == 0)
+      break;
+    buffer.append(read_buf, win_read);
+#else
+    int n = HANDLE_EINTR(
+        read(io->read_file.GetPlatformFile(), read_buf, sizeof(read_buf)));
+    if (n <= 0)
+      break;
+    buffer.append(read_buf, n);
+#endif
+    size_t newline = std::string::npos;
+    while ((newline = buffer.find('\n')) != std::string::npos) {
+      std::string line = buffer.substr(0, newline);
+      buffer.erase(0, newline + 1);
+      base::TrimWhitespaceASCII(line, base::TRIM_ALL, &line);
+      if (line.empty())
+        continue;
+      std::string payload = line;
+      if (base::StartsWith(payload, "data:"))
+        payload = std::string(base::TrimWhitespaceASCII(payload.substr(5),
+                                                        base::TRIM_ALL));
+      if (payload == "[DONE]" || payload.empty() || payload[0] != '{')
+        continue;
+      auto parsed = base::JSONReader::ReadDict(payload, base::JSON_PARSE_RFC);
+      if (!parsed)
+        continue;
+      if (const base::DictValue* err = parsed->FindDict("error")) {
+        if (const std::string* msg = err->FindString("message"))
+          http_error = *msg;
+        continue;
+      }
+      full_text += DeltaTextFromChatChunk(*parsed);
+    }
+  }
+  int exit_code = -1;
+  io->process.WaitForExit(&exit_code);
+  if (full_text.empty()) {
+    out.Set("error", http_error.empty() ? "Grok returned no reply." : http_error);
+    return out;
+  }
+  out.Set("text", full_text);
+  return out;
+}
+
 void RunGrokChatStream(
     net::HttpServer* server,
     scoped_refptr<base::SingleThreadTaskRunner> io_task_runner,
@@ -2310,9 +3077,9 @@ void RunGrokChatStream(
     std::string message,
     std::string session_id,
     std::string model) {
-  // Tell the model who it is. Otherwise it digs through ~/.grok session files to
-  // answer "what model are you", or misreports itself and name-drops Cursor
-  // (Composer is Cursor's model, agent type 'cursor') — confusing in a browser.
+  // Sidebar chat uses the OAuth token directly. session_id is the old CLI
+  // harness resume handle and is intentionally ignored.
+  (void)session_id;
   std::string rules =
       std::string(ChatRulesForMessage(message)) +
       "\n\nIDENTITY: You are Grok, the AI assistant built into Xplor — an "
@@ -2327,12 +3094,10 @@ void RunGrokChatStream(
       {base::MayBlock(), base::TaskPriority::USER_VISIBLE,
        base::TaskShutdownBehavior::CONTINUE_ON_SHUTDOWN})
       ->PostTask(FROM_HERE,
-                 base::BindOnce(&PumpGrokStream, server, io_task_runner,
-                                connection_id,
-                                BuildGrokChatCommand(message, session_id, model,
-                                                     true, rules),
-                                model, "chat", GrokStreamKind::kChat, conv_id,
-                                ""));
+                 base::BindOnce(&PumpGrokOAuthChat, server, io_task_runner,
+                                connection_id, std::move(conv_id),
+                                std::move(message), std::move(model),
+                                std::move(rules)));
 }
 
 base::DictValue RunGrokSearch(const std::string& query,
@@ -2369,34 +3134,11 @@ base::DictValue RunGrokChat(const std::string& message,
                             const std::string& session_id,
                             const std::string& model,
                             const std::string& rules_override) {
+  (void)session_id;
   const std::string rules =
       rules_override.empty() ? std::string(ChatRulesForMessage(message))
                              : rules_override;
-  base::CommandLine cmd =
-      BuildGrokChatCommand(message, session_id, model, false, rules);
-#if BUILDFLAG(IS_WIN)
-  cmd = MaybeWrapForWindowsShell(cmd);
-#endif
-  int exit_code = 0;
-  std::string output;
-  if (!base::GetAppOutputWithExitCode(cmd, &output, &exit_code) ||
-      exit_code != 0) {
-    base::DictValue err;
-    std::string err_text = output.empty() ? "grok failed" : output;
-    if (err_text.find("auth") != std::string::npos ||
-        err_text.find("login") != std::string::npos) {
-      err_text += " — run: grok login --oauth";
-    }
-    err.Set("error", err_text);
-    return err;
-  }
-  if (auto parsed = base::JSONReader::ReadDict(output, base::JSON_PARSE_RFC))
-    return std::move(*parsed);
-  base::DictValue fallback;
-  fallback.Set("text", output);
-  if (!session_id.empty())
-    fallback.Set("sessionId", session_id);
-  return fallback;
+  return RunOAuthChatBlocking(message, model, rules);
 }
 
 // Async LLM-generated topic title for a conversation. Runs a SESSIONLESS,
@@ -2951,6 +3693,7 @@ bool GrokNative::TryHandleRequest(
     return ServeUiFile(server, connection_id, "search.html");
   }
 
+
   if (info.method == "GET" && (path == "/welcome" || path == "/welcome/")) {
     return ServeUiFile(server, connection_id, "welcome.html");
   }
@@ -3055,6 +3798,18 @@ bool GrokNative::TryHandleRequest(
   // creating/building apps if grok isn't runnable.
   if (info.method == "GET" && path == "/api/grok/status") {
     SendJson(server, connection_id, net::HTTP_OK, GetGrokInstallStatus());
+    return true;
+  }
+
+  // In-browser OAuth login (mirrors AskHere / Xnative "Continue with OAuth"):
+  // POST starts `grok login --oauth` and opens the auth.x.ai URL in an Xplor
+  // tab; GET polls progress until the CLI finishes the loopback callback.
+  if (info.method == "POST" && path == "/api/grok/login") {
+    SendJson(server, connection_id, net::HTTP_OK, StartGrokLoginOAuth());
+    return true;
+  }
+  if (info.method == "GET" && path == "/api/grok/login") {
+    SendJson(server, connection_id, net::HTTP_OK, GrokLoginStatusDict());
     return true;
   }
 

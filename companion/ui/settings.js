@@ -43,21 +43,50 @@ async function init() {
   fillSelect(chatModel, models, settings.model || DEFAULT_MODEL);
   fillSelect(searchModel, models, settings.search_model || SEARCH_DEFAULT_MODEL);
   if (maxTurns) maxTurns.value = settings.max_turns || 50;
-
-  document.getElementById('info-companion')?.replaceChildren(
-    document.createTextNode(settings.companion_url || location.origin),
-  );
-  document.getElementById('info-gateway')?.replaceChildren(
-    document.createTextNode(settings.gateway_url || '—'),
-  );
-  document.getElementById('info-grok')?.replaceChildren(
-    document.createTextNode(settings.grok_bin || '—'),
-  );
-  document.getElementById('info-cdp')?.replaceChildren(
-    document.createTextNode(settings.cdp_url || '—'),
-  );
-
+  await loadAccount();
   await loadTheme();
+}
+
+async function loadAccount() {
+  const status = document.getElementById('account-status');
+  const btn = document.getElementById('account-signin');
+  if (!status) return;
+  let st = {};
+  try {
+    const res = await fetch('/api/grok/login', { cache: 'no-store' });
+    if (res.ok) st = await res.json();
+  } catch { /* unsigned */ }
+  const signed = !!(st.logged_in || st.ok);
+  status.textContent = signed
+    ? (st.account ? `Signed in as ${st.account}` : 'Signed in to Grok')
+    : 'Not signed in';
+  if (btn) {
+    btn.hidden = signed;
+    btn.onclick = async () => {
+      btn.disabled = true;
+      status.textContent = 'Opening sign-in…';
+      try {
+        const start = await fetch('/api/grok/login', { method: 'POST', cache: 'no-store' });
+        if (!start.ok) throw new Error('Sign-in is unavailable.');
+        let cur = await start.json();
+        const deadline = Date.now() + 10 * 60 * 1000;
+        while (Date.now() < deadline) {
+          if (cur.ok || cur.logged_in) break;
+          if (cur.done && !cur.ok) throw new Error(cur.error || 'Sign-in did not finish.');
+          if (cur.message) status.textContent = cur.message;
+          await new Promise((r) => setTimeout(r, 1200));
+          const poll = await fetch('/api/grok/login', { cache: 'no-store' });
+          cur = await poll.json();
+        }
+      } catch (e) {
+        status.textContent = e.message || 'Could not sign in.';
+        btn.disabled = false;
+        return;
+      }
+      btn.disabled = false;
+      await loadAccount();
+    };
+  }
 }
 
 async function persist(partial) {

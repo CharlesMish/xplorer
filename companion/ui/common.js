@@ -854,24 +854,20 @@ function showGrokInstallSplash() {
     overlay.innerHTML = `
       <div class="grok-splash" role="dialog" aria-modal="true" aria-labelledby="grok-splash-title">
         <div class="grok-splash__icon">✦</div>
-        <h2 id="grok-splash-title">Set up Grok Build</h2>
-        <p>Building apps runs <strong>Grok Build</strong> — the <code>grok</code> command-line tool — which isn't installed or on your PATH yet.</p>
-        <ol>
-          <li>Install the <strong>Grok CLI</strong> and make sure <code>grok</code> runs in your terminal.</li>
-          <li>Sign in: <code>grok login</code></li>
-          <li>Come back and click <strong>Recheck</strong>.</li>
-        </ol>
+        <h2 id="grok-splash-title">Sign in to Grok</h2>
+        <p>Use your Grok account. A browser tab opens for sign-in, then you come back here.</p>
         <div class="grok-splash__row">
-          <button type="button" class="grok-splash__btn primary" data-grok-recheck>Recheck</button>
+          <button type="button" class="grok-splash__btn primary" data-grok-login>Sign in</button>
+          <button type="button" class="grok-splash__btn ghost" data-grok-recheck>Recheck</button>
           <a class="grok-splash__btn ghost" href="https://grok.com/" target="_blank" rel="noopener">Get Grok</a>
           <button type="button" class="grok-splash__btn ghost" data-grok-dismiss>Not now</button>
         </div>
         <div class="grok-splash__status" data-grok-status></div>
-        <p class="grok-splash__note">Already installed elsewhere? Set its full path as <code>grok_bin</code> in <code>~/.xplorer/companion.json</code>, or the <code>GROK_BIN</code> environment variable.</p>
+
       </div>`;
     document.body.appendChild(overlay);
     overlay.querySelector('[data-grok-dismiss]').onclick = () => overlay.classList.add('hidden');
-    overlay.querySelector('[data-grok-recheck]').onclick = async () => {
+    const runRecheck = async () => {
       const statusEl = overlay.querySelector('[data-grok-status]');
       const btn = overlay.querySelector('[data-grok-recheck]');
       btn.disabled = true;
@@ -879,14 +875,61 @@ function showGrokInstallSplash() {
       statusEl.textContent = 'Checking…';
       const s = await fetchGrokStatus();
       btn.disabled = false;
-      if (s.installed) {
-        statusEl.textContent = 'Grok Build detected ✓';
+      if (s.installed && (s.logged_in !== false || s.logged_in === undefined)) {
+        // Prefer installed+logged_in when the field exists; fall back to
+        // installed-only for older gateways that don't report logged_in.
+        if (s.logged_in === false) {
+          statusEl.className = 'grok-splash__status err';
+          statusEl.textContent = 'Not signed in yet. Click Sign in.';
+          return false;
+        }
+        statusEl.textContent = 'Signed in ✓';
         overlay.dispatchEvent(new CustomEvent('grok-ready'));
         setTimeout(() => overlay.classList.add('hidden'), 700);
-      } else {
-        statusEl.className = 'grok-splash__status err';
-        statusEl.textContent = 'Still not detected — make sure `grok` runs in a terminal, then retry.';
+        return true;
       }
+      statusEl.className = 'grok-splash__status err';
+      statusEl.textContent = 'Not signed in yet. Click Sign in.';
+      return false;
+    };
+    overlay.querySelector('[data-grok-recheck]').onclick = () => { runRecheck(); };
+    overlay.querySelector('[data-grok-login]').onclick = async () => {
+      const statusEl = overlay.querySelector('[data-grok-status]');
+      const btn = overlay.querySelector('[data-grok-login]');
+      btn.disabled = true;
+      statusEl.className = 'grok-splash__status';
+      statusEl.textContent = 'Opening browser for sign-in…';
+      try {
+        const start = await fetch('/api/grok/login', { method: 'POST', cache: 'no-store' });
+        if (!start.ok) throw new Error('Sign-in is unavailable. Try again.');
+        let st = await start.json();
+        if (st.url) { try { window.open(st.url, '_blank', 'noopener'); } catch (_) {} }
+        const deadline = Date.now() + 10 * 60 * 1000;
+        while (Date.now() < deadline) {
+          if (st.ok || st.logged_in) {
+            statusEl.textContent = 'Signed in ✓';
+            btn.disabled = false;
+            await runRecheck();
+            return;
+          }
+          if (st.done && !st.ok) {
+            statusEl.className = 'grok-splash__status err';
+            statusEl.textContent = st.error || 'Sign-in did not complete.';
+            btn.disabled = false;
+            return;
+          }
+          if (st.message) statusEl.textContent = st.message;
+          await new Promise((r) => setTimeout(r, 1200));
+          const poll = await fetch('/api/grok/login', { cache: 'no-store' });
+          st = await poll.json();
+        }
+        statusEl.className = 'grok-splash__status err';
+        statusEl.textContent = 'Sign-in timed out.';
+      } catch (e) {
+        statusEl.className = 'grok-splash__status err';
+        statusEl.textContent = (e && e.message) || 'Could not start sign-in.';
+      }
+      btn.disabled = false;
     };
   }
   overlay.classList.remove('hidden');
