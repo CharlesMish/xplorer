@@ -569,6 +569,80 @@ def patch_quiet_tab_type(src: Path):
         print(f"  skip (already applied): {view}")
 
 
+def patch_quiet_bookmark_star(src: Path):
+    """Arc/Dia: the empty bookmark star is not drawn in the address pill."""
+    path = src / (
+        "chrome/browser/ui/views/bookmarks/bookmark_page_action_controller.cc"
+    )
+    text = path.read_text()
+    if "XPLORER: quiet star" in text:
+        print(f"  skip (already applied): {path}")
+        return
+    old_inc = '#include "chrome/browser/ui/tabs/contents_observing_tab_feature.h"\n'
+    new_inc = (
+        '#include "chrome/browser/ui/tabs/contents_observing_tab_feature.h"\n'
+        '#include "chrome/browser/ui/tabs/vertical_tab_strip_state_controller.h"'
+        "  // XPLORER\n"
+    )
+    if old_inc not in text:
+        sys.exit(f"ANCHOR NOT FOUND in {path} (include)")
+    text = text.replace(old_inc, new_inc, 1)
+    old = (
+        "void BookmarkPageActionController::URLStarredChanged(\n"
+        "    content::WebContents* web_contents,\n"
+        "    bool starred) {\n"
+        "  SetStarred(starred);\n"
+        "}\n"
+    )
+    new = (
+        "void BookmarkPageActionController::URLStarredChanged(\n"
+        "    content::WebContents* web_contents,\n"
+        "    bool starred) {\n"
+        "  SetStarred(starred);\n"
+        "  // XPLORER: quiet star. Visibility depends on starred state.\n"
+        "  UpdatePageActionVisibility();\n"
+        "}\n"
+    )
+    if old not in text:
+        sys.exit(f"ANCHOR NOT FOUND in {path} (starred changed)")
+    text = text.replace(old, new, 1)
+    old = (
+        "bool BookmarkPageActionController::ShouldShowPageAction() const {\n"
+        "  const auto& url = tab().GetContents()->GetLastCommittedURL();\n"
+        "  return browser_defaults::bookmarks_enabled &&\n"
+        "         edit_bookmarks_enabled_.GetValue() && url.is_valid() && !IsNTPUrl(url);\n"
+        "}\n"
+    )
+    new = (
+        "bool BookmarkPageActionController::ShouldShowPageAction() const {\n"
+        "  const auto& url = tab().GetContents()->GetLastCommittedURL();\n"
+        "  if (!(browser_defaults::bookmarks_enabled &&\n"
+        "        edit_bookmarks_enabled_.GetValue() && url.is_valid() &&\n"
+        "        !IsNTPUrl(url))) {\n"
+        "    return false;\n"
+        "  }\n"
+        "  // XPLORER: quiet star. An empty star is Chrome chrome. A filled\n"
+        "  // star still shows when the page is bookmarked. Cmd-D still works.\n"
+        "  const auto* helper =\n"
+        "      BookmarkTabHelper::FromWebContents(tab().GetContents());\n"
+        "  if (helper && !helper->is_starred()) {\n"
+        "    const auto* browser = tab().GetBrowserWindowInterface();\n"
+        "    const auto* vts =\n"
+        "        browser ? tabs::VerticalTabStripStateController::From(browser)\n"
+        "                : nullptr;\n"
+        "    if (vts && vts->ShouldDisplayVerticalTabs()) {\n"
+        "      return false;\n"
+        "    }\n"
+        "  }\n"
+        "  return true;\n"
+        "}\n"
+    )
+    if old not in text:
+        sys.exit(f"ANCHOR NOT FOUND in {path} (should show)")
+    path.write_text(text.replace(old, new, 1))
+    print(f"  edited: {path}")
+
+
 def patch_quiet_omnibox_icon(src: Path):
     """Arc/Dia: the idle lock is not drawn in the address pill."""
     path = src / "chrome/browser/ui/views/location_bar/location_bar_view.cc"
@@ -3544,6 +3618,7 @@ def main(src: Path):
     patch_quiet_toolbar_scale(src)
     patch_hide_idle_reload(src)
     patch_quiet_omnibox_icon(src)
+    patch_quiet_bookmark_star(src)
 
     patch_xplorer_settings_access(src)
 
