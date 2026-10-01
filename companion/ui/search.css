@@ -847,3 +847,37 @@ html[data-theme="dark"] .markdown .hl-num { color: #fbbf24; }
   border-radius: 10px;
   border: 1px solid var(--border);
 }
+/* ---- Xplorer QA polish: compact background picker ---- */
+.nt-bg-panel { width: 300px; padding: 14px; border-radius: 14px; background: var(--bg); }
+.nt-bg-panel__head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+.nt-bg-panel__title { margin: 0; font-size: 13px; }
+.nt-bg-panel__hint { margin: 12px 0 0; font-size: 11px; }
+.nt-tabs { display: inline-flex; padding: 2px; border-radius: 8px; background: var(--surface); border: 1px solid var(--border); }
+.nt-tab {
+  border: 0; background: none; font: inherit; font-size: 12px; font-weight: 500;
+  color: var(--text-secondary); padding: 3px 10px; border-radius: 6px; cursor: pointer;
+}
+.nt-tab.is-active { background: var(--bg); color: var(--text); box-shadow: 0 1px 2px var(--shadow); }
+.nt-mode { margin: 0; }
+.nt-mode[hidden] { display: none; }
+/* Style selector as one segmented control instead of five loose chips. */
+.nt-types {
+  flex-wrap: nowrap; gap: 0; padding: 2px; margin-bottom: 12px;
+  border: 1px solid var(--border); border-radius: 9px; background: var(--surface);
+}
+.nt-type { flex: 1; border: 0; background: none; border-radius: 7px; padding: 5px 0; }
+.nt-type:hover { border: 0; color: var(--text); }
+/* Active chip used white text on the accent, which is white in dark mode. */
+.nt-type.is-active { background: var(--button-bg); color: var(--button-text); border: 0; }
+.nt-mode__reset { display: block; margin: 12px 0 0 auto; padding: 0; }
+.nt-swatch { width: 24px; height: 24px; border-radius: 50%; }
+.nt-swatch.is-active { outline-offset: 2px; }
+.nt-grad { border-radius: 8px; }
+/* Gear lives top-right and the panel drops down into the empty corner.
+   Bottom-anchored, the panel grew upward over the search box. */
+.nt-bg-gear { top: 16px; bottom: auto; right: 16px; width: 34px; height: 34px; box-shadow: none; }
+.nt-bg-gear svg { width: 17px; height: 17px; }
+.nt-bg-panel { top: 58px; bottom: auto; right: 16px; transform: translateY(-6px); }
+.nt-bg-panel.is-open { transform: translateY(0); }
+.nt-type { padding: 5px 2px; }
+.nt-ctl__val { font-family: ui-monospace, "SF Mono", Menlo, monospace; }

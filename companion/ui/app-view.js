@@ -190,8 +190,7 @@ async function loadApp() {
   const data = await r.json();
   if (!r.ok) throw new Error(data.error || r.statusText);
   app = data.app;
-  document.title = `${app.name || 'App'} — Grok Build`;
-  $('#app-title').textContent = app.name || 'App';
+  showAppName();
   const pathEl = $('#app-path');
   pathEl.textContent = app.path || '';
   pathEl.title = app.path || '';
@@ -351,11 +350,67 @@ function styleIframeScrollbars(iframe) {
   }
 }
 
+let shownName = null;
+// Title, tab title and letter icon follow the name. The agent picks it when
+// the first build finishes; the user can click it to rename.
+function showAppName() {
+  const name = app?.name || 'App';
+  document.title = `${name} — Grok Build`;
+  const el = $('#app-title');
+  if (el && document.activeElement !== el) el.textContent = name;
+  if (shownName !== null && shownName !== name) {
+    $('#app-icon').src = `/api/apps/${encodeURIComponent(appId)}/icon?v=${Date.now()}`;
+  }
+  shownName = name;
+}
+
+(function setupRename() {
+  const el = $('#app-title');
+  if (!el) return;
+  el.title = 'Click to rename';
+  el.setAttribute('role', 'textbox');
+  el.addEventListener('click', () => {
+    if (el.isContentEditable) return;
+    el.contentEditable = 'plaintext-only';
+    el.focus();
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    const sel = getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+  });
+  const finish = async (save) => {
+    if (!el.isContentEditable) return;
+    el.contentEditable = 'false';
+    const next = el.textContent.trim();
+    if (!save || !next || next === app?.name) {
+      el.textContent = app?.name || 'App';
+      return;
+    }
+    try {
+      const r = await fetch(`/api/apps/${encodeURIComponent(appId)}/rename`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: next }),
+      });
+      const data = await r.json();
+      if (r.ok && data.app) app = data.app;
+    } catch (_) { /* keep the old name */ }
+    showAppName();
+  };
+  el.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+    if (e.key === 'Escape') { e.preventDefault(); finish(false); }
+  });
+  el.addEventListener('blur', () => finish(true));
+})();
+
 async function refreshApp() {
   const r = await fetch(`/api/apps/${encodeURIComponent(appId)}`);
   const data = await r.json();
   if (r.ok && data.app) {
     app = data.app;
+    showAppName();
     updateStatus(app.status);
     if (app.runtime_port) {
       const pathEl = $('#app-path');

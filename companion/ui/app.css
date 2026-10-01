@@ -439,3 +439,10 @@ body.canvas-only .app-preview { border-right: none; }
   body.canvas-only .app-workspace,
   body.canvas-only .app-workspace.chat-collapsed { grid-template-rows: 1fr; }
 }
+
+/* Click the app name to rename it. */
+.app-title { cursor: text; border-radius: 6px; padding: 1px 4px; margin-left: -4px; }
+.app-title:hover { background: var(--surface, rgba(127,127,127,.08)); }
+.app-title[contenteditable="plaintext-only"], .app-title[contenteditable="true"] {
+  outline: none; background: var(--bg, #fff); box-shadow: 0 0 0 2px var(--focus, rgba(0,0,0,.14));
+}

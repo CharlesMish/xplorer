@@ -4,16 +4,21 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Grok Settings — Xplor</title>
+  <link rel="icon" type="image/svg+xml" href="/grok-icon.svg">
   <link rel="stylesheet" href="/theme.css">
   <script>document.documentElement.setAttribute('data-theme',matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light');</script>
   <link rel="stylesheet" href="/toolbar.css">
   <link rel="stylesheet" href="/settings.css">
+  <link rel="stylesheet" href="/polish.css">
 </head>
 <body data-grok-toolbar="auto">
   <div id="grok-toolbar-mount"></div>
   <main class="settings-page settings-shell">
     <nav class="settings-sidebar" aria-label="Settings sections">
       <button type="button" class="settings-nav-btn active" data-pane="general">General</button>
+      <button type="button" class="settings-nav-btn" data-pane="providers">AI Providers</button>
+      <button type="button" class="settings-nav-btn" data-pane="appearance">Appearance</button>
+      <button type="button" class="settings-nav-btn" data-pane="favorites">Favorites</button>
       <button type="button" class="settings-nav-btn" data-pane="bookmarks">Bookmarks</button>
       <button type="button" class="settings-nav-btn" data-pane="updates">Updates</button>
     </nav>
@@ -23,18 +28,8 @@
       <section class="settings-pane active" data-pane="general">
         <header class="settings-head">
           <h1>Settings</h1>
-          <p>Sign in, pick a model, and choose what opens when Xplor starts.</p>
+          <p>What opens when Xplor starts, and links to the rest of the browser.</p>
         </header>
-
-        <section class="settings-card" id="account-card">
-          <h2>Grok account</h2>
-          <p class="settings-hint">This is the account Xplor uses to talk to Grok. Sign in opens a browser tab. Sign out removes that login from this Mac.</p>
-          <p id="account-status" class="settings-hint">Checking…</p>
-          <div class="settings-actions">
-            <button type="button" id="account-signin" class="settings-btn settings-btn-primary" hidden>Sign in</button>
-            <button type="button" id="account-signout" class="settings-btn" hidden>Sign out</button>
-          </div>
-        </section>
 
         <section class="settings-card">
           <h2>Home &amp; navigation</h2>
@@ -49,13 +44,77 @@
         </section>
 
         <section class="settings-card">
-          <h2>Models</h2>
+          <h2>Welcome</h2>
+          <button type="button" id="replay-welcome" class="settings-btn">Show welcome screen again</button>
+        </section>
+
+        <section class="settings-card">
+          <h2>Chrome</h2>
+          <button type="button" id="open-chrome-settings" class="settings-btn">Open Chrome settings</button>
+          <p class="settings-hint">Browser engine settings, extensions, privacy, etc.</p>
+        </section>
+
+      </section>
+
+      <section class="settings-pane" data-pane="providers" hidden>
+        <header class="settings-head">
+          <h1>AI Providers</h1>
+          <p>Connect the AI services Xplor can use. Chat, page summaries and tab organizing work with any connected provider. Building apps uses Grok.</p>
+        </header>
+
+        <section class="settings-card" id="account-card">
+          <h2>Grok <span class="provider-badge" id="grok-badge"></span></h2>
+          <p class="settings-hint">Grok models through your Grok account. Sign in opens a tab. Also used to build apps.</p>
+          <p id="account-status" class="settings-hint">Checking…</p>
+          <div class="settings-actions">
+            <button type="button" id="account-signin" class="settings-btn settings-btn-primary" hidden>Sign in</button>
+            <button type="button" id="account-signout" class="settings-btn" hidden>Sign out</button>
+          </div>
+          <label class="settings-field settings-field-check provider-toggle">
+            <input type="checkbox" data-provider-toggle="grok" checked>
+            <span>Show Grok models in the chat model list</span>
+          </label>
+        </section>
+
+        <section class="settings-card" id="claude-card">
+          <h2>Claude <span class="provider-badge" id="claude-badge"></span></h2>
+          <p class="settings-hint">Use Claude models in chat by signing in with your Anthropic Console account. Usage is billed at API rates to the Console organization you choose, so it needs Console credits. It does not use a Claude Pro or Max plan.</p>
+          <p id="claude-status" class="settings-hint">Checking…</p>
+          <div id="claude-install" class="claude-install" hidden>
+            <p class="settings-hint">Claude sign-in uses Anthropic's <code>ant</code> command-line tool. Install it in Terminal, then come back and click Check again.</p>
+            <div class="claude-cmd">
+              <code id="claude-install-cmd">brew install anthropics/tap/ant</code>
+              <button type="button" id="claude-copy" class="settings-btn">Copy</button>
+            </div>
+            <p class="settings-hint"><a id="claude-install-help" href="https://platform.claude.com/docs/en/cli-sdks-libraries/cli/quickstart" target="_blank" rel="noopener">Other ways to install</a></p>
+          </div>
+          <div id="claude-code-row" class="claude-code-row" hidden>
+            <p class="settings-hint">Approve in the Claude tab that just opened, then paste the code it shows here.</p>
+            <div class="claude-cmd">
+              <input type="text" id="claude-code" placeholder="Paste code" autocomplete="off" spellcheck="false">
+              <button type="button" id="claude-code-submit" class="settings-btn settings-btn-primary">Finish sign-in</button>
+            </div>
+          </div>
+          <div class="settings-actions">
+            <button type="button" id="claude-signin" class="settings-btn settings-btn-primary" hidden>Sign in with Claude</button>
+            <button type="button" id="claude-recheck" class="settings-btn" hidden>Check again</button>
+            <button type="button" id="claude-signout" class="settings-btn" hidden>Sign out</button>
+          </div>
+                  <label class="settings-field settings-field-check provider-toggle">
+            <input type="checkbox" data-provider-toggle="claude" checked>
+            <span>Show Claude models in the chat model list</span>
+          </label>
+        </section>
+
+        <section class="settings-card">
+          <h2>Defaults</h2>
+          <p class="settings-hint">Models from every connected provider are listed. Each chat can still switch models from the picker under the input.</p>
           <label class="settings-field">
-            <span>Chat &amp; conversations model</span>
+            <span>Default chat model</span>
             <select id="chat-model"></select>
           </label>
           <label class="settings-field">
-            <span>Web search model</span>
+            <span>Default search model</span>
             <select id="search-model"></select>
 
           </label>
@@ -64,11 +123,19 @@
         <section class="settings-card">
           <h2>Replies</h2>
           <label class="settings-field">
-            <span>How long Grok can work on one reply</span>
+            <span>How many steps an agent can take per reply</span>
             <input type="number" id="max-turns" min="1" max="200" step="1">
-            <small>Higher lets Grok take more steps. Lower is faster. Default 50.</small>
+            <small>Higher allows longer tasks. Lower is faster. Default 50.</small>
           </label>
         </section>
+
+      </section>
+
+      <section class="settings-pane" data-pane="appearance" hidden>
+        <header class="settings-head">
+          <h1>Appearance</h1>
+          <p>Light or dark, and the color of the window.</p>
+        </header>
 
         <section class="settings-card">
           <h2>Browser appearance</h2>
@@ -83,17 +150,34 @@
         </section>
 
         <section class="settings-card">
-          <h2>Welcome</h2>
-          <button type="button" id="replay-welcome" class="settings-btn">Show welcome screen again</button>
+          <h2>Theme color</h2>
+          <p class="settings-hint">Right-click the sidebar and choose <b>Panel Color</b>. The color applies to the sidebar, the top bar, chat, the new-tab page and these settings.</p>
         </section>
 
         <section class="settings-card">
-          <h2>Chrome</h2>
-          <a href="chrome://settings" class="settings-btn" style="display:inline-block;text-decoration:none">Open full Chrome settings →</a>
-          <p class="settings-hint">Browser engine settings, extensions, privacy, etc.</p>
+          <h2>New-tab background</h2>
+          <p class="settings-hint">Open a new tab and click the gear in the top-right corner to pick a color, gradient or image for light and dark mode.</p>
+        </section>
+      </section>
+
+      <section class="settings-pane" data-pane="favorites" hidden>
+        <header class="settings-head">
+          <h1>Favorites</h1>
+          <p>The app icons at the top of the sidebar, up to 12. Reorder, rename, or remove them here, or right-click an icon. The + tile adds the page you are on.</p>
+        </header>
+
+        <section class="settings-card">
+          <h2>Favorites</h2>
+          <div id="favorites-editor" class="toolbar-editor"></div>
+          <div class="tb-add-bar">
+            <button type="button" id="favorites-add" class="settings-btn">+ Add favorite</button>
+          </div>
         </section>
 
-        <p id="settings-status" class="settings-status" role="status" aria-live="polite"></p>
+        <div class="settings-actions">
+          <button type="button" id="favorites-save" class="settings-btn settings-btn-primary">Save</button>
+        </div>
+        <p id="favorites-status" class="settings-status" role="status" aria-live="polite"></p>
       </section>
 
       <section class="settings-pane" data-pane="bookmarks" hidden>
@@ -149,6 +233,7 @@
     </div>
   </main>
   <script src="/toolbar.js"></script>
+  <p id="settings-status" class="settings-status settings-toast" role="status" aria-live="polite"></p>
   <script src="/common.js"></script>
   <script src="/settings.js"></script>
 </body>

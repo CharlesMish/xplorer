@@ -1,5 +1,6 @@
 // Logs page — polls GET /api/logs and renders a filterable table.
 (function () {
+  if (typeof startThemeWatcher === 'function') startThemeWatcher();
   const body = document.getElementById('logs-body');
   const empty = document.getElementById('logs-empty');
   const sourceSel = document.getElementById('log-source');

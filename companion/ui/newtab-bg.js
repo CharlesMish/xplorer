@@ -185,7 +185,9 @@
     document.documentElement.setAttribute('data-bg-type', cfg.type);
 
     if (cfg.type === 'default') {
-      bgEl.style.background = defaultColor(mode);
+      // Follows the browser theme color when one is on (common.js sets --bg),
+      // like Chrome's new-tab page.
+      bgEl.style.background = 'var(--bg, ' + defaultColor(mode) + ')';
       bgEl.classList.add('is-ready');
     } else if (cfg.type === 'solid') {
       bgEl.style.background = cfg.color;
@@ -224,7 +226,7 @@
   function ctlHtml(mode) {
     var cfg = state[mode];
     if (cfg.type === 'default') {
-      return '<p class="nt-ctl__note">Plain background that matches the theme — white in light mode, dark in dark mode.</p>';
+      return '<p class="nt-ctl__note">Plain background that follows the theme.</p>';
     }
     if (cfg.type === 'solid') {
       return '<div class="nt-ctl__row">' +
@@ -293,17 +295,29 @@
     if (mode === currentMode()) applyBackground();
   }
 
-  function cardHtml(mode, label, swatch) {
+  function cardHtml(mode) {
     return '<div class="nt-mode" data-mode="' + mode + '">' +
-        '<div class="nt-mode__head">' +
-          '<span class="nt-mode__label"><span class="swatch ' + swatch + '"></span>' + label + '</span>' +
-          '<button type="button" class="nt-mode__reset" data-act="reset">Reset</button>' +
-        '</div>' +
         '<div class="nt-types">' + TYPES.map(function (t) {
           return '<button type="button" class="nt-type" data-act="type" data-type="' + t.id + '">' + t.label + '</button>';
         }).join('') + '</div>' +
         '<div class="nt-ctl" data-mode="' + mode + '"></div>' +
+        '<button type="button" class="nt-mode__reset" data-act="reset">Reset to default</button>' +
       '</div>';
+  }
+
+  // One mode at a time. Showing light and dark stacked made the panel tall
+  // enough to cover the search box.
+  var shownMode = null;
+  function showMode(mode) {
+    shownMode = mode;
+    panel.querySelectorAll('.nt-tab').forEach(function (t) {
+      var on = t.dataset.mode === mode;
+      t.classList.toggle('is-active', on);
+      t.setAttribute('aria-selected', on ? 'true' : 'false');
+    });
+    panel.querySelectorAll('.nt-mode').forEach(function (c) {
+      c.hidden = c.dataset.mode !== mode;
+    });
   }
 
   var gear = document.createElement('button');
@@ -323,15 +337,24 @@
 
   function buildPicker() {
     panel.innerHTML =
-      '<p class="nt-bg-panel__title">New-tab background</p>' +
-      '<p class="nt-bg-panel__hint">Pick a style per mode — switches automatically with light / dark.</p>' +
-      cardHtml('light', 'Light mode', 'light') +
-      cardHtml('dark', 'Dark mode', 'dark');
+      '<div class="nt-bg-panel__head">' +
+        '<p class="nt-bg-panel__title">Background</p>' +
+        '<div class="nt-tabs" role="tablist">' +
+          '<button type="button" class="nt-tab" role="tab" data-mode="light">Light</button>' +
+          '<button type="button" class="nt-tab" role="tab" data-mode="dark">Dark</button>' +
+        '</div>' +
+      '</div>' +
+      cardHtml('light') +
+      cardHtml('dark') +
+      '<p class="nt-bg-panel__hint">Xplor uses the one that matches your system appearance.</p>';
     ['light', 'dark'].forEach(function (mode) { renderChips(mode); renderCtl(mode); });
+    showMode(shownMode || currentMode());
   }
 
   // ---- Delegated wiring (survives innerHTML re-renders) ----
   panel.addEventListener('click', function (e) {
+    var tab = e.target.closest('.nt-tab');
+    if (tab) { showMode(tab.dataset.mode); return; }
     var el = e.target.closest('[data-act]'), card = e.target.closest('.nt-mode');
     if (!el || !card) return;
     var mode = card.dataset.mode, act = el.dataset.act, cfg = state[mode];

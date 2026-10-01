@@ -96,6 +96,8 @@ async function refreshAccount() {
   }
   if (signIn) signIn.classList.add('hidden');
   if (cont) cont.classList.remove('hidden');
+  // Once connected, Continue is the only step left.
+  document.getElementById('skip-sign-in')?.classList.add('hidden');
   setError('account-error', '');
 }
 
@@ -293,11 +295,13 @@ function renderApps() {
     button.className = 'choice' + (state.apps.has(app.id) ? ' selected' : '');
     button.innerHTML = `<strong></strong><small></small>`;
     button.querySelector('strong').textContent = app.label;
-    button.querySelector('small').textContent = 'Pin to sidebar';
+    const label = () => (state.apps.has(app.id) ? 'Pinned' : 'Pin to sidebar');
+    button.querySelector('small').textContent = label();
     button.addEventListener('click', () => {
       if (state.apps.has(app.id)) state.apps.delete(app.id);
       else state.apps.add(app.id);
       button.classList.toggle('selected', state.apps.has(app.id));
+      button.querySelector('small').textContent = label();
     });
     grid.appendChild(button);
   });

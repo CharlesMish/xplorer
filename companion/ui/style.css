@@ -69,8 +69,8 @@ body.conv-open .sidebar {
   align-items: center;
   gap: 6px;
   padding: 8px 10px;
-  border-bottom: 1px solid var(--border);
-  background: var(--surface);
+  border-bottom: none;
+  background: var(--bg);
   flex: none;
   min-width: 0;
   width: 100%;
@@ -441,8 +441,8 @@ html[data-theme="dark"] .markdown .hl-num { color: #fbbf24; }
   flex-direction: column;
   gap: 6px;
   padding: 8px 10px 10px;
-  border-top: 1px solid var(--border);
-  background: var(--surface);
+  border-top: none;
+  background: var(--bg);
   position: relative;
   flex: none;
   min-width: 0;
@@ -777,3 +777,34 @@ html[data-theme="dark"] .markdown .hl-num { color: #fbbf24; }
   color: var(--button-text);
 }
 .xplorer-update-banner__btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* ---- Xplorer QA polish ---- */
+/* Rendered Markdown carries its own block spacing. pre-wrap turned the line
+   breaks between elements into blank lines, so bullets sat a line apart. */
+.msg.markdown, .msg .markdown { white-space: normal; }
+.messages .markdown > :first-child { margin-top: 0; }
+.messages .markdown > :nth-last-child(2):not(.msg-meta),
+.messages .markdown > :last-child:not(.msg-meta) { margin-bottom: 0; }
+.messages .markdown ul, .messages .markdown ol { margin: 0.3em 0; padding-left: 1.3em; }
+.messages .markdown li { margin: 0.15em 0; }
+/* The hover-only model/copy row reserved ~26px under every reply. Float it
+   over the bubble's top-right corner instead. */
+.msg.assistant { position: relative; }
+.msg.assistant .msg-meta {
+  position: absolute; top: 6px; right: 8px; margin-top: 0;
+  background: var(--assistant-bg); border-radius: 999px; padding: 0 2px;
+}
+
+/* Empty chat: a short welcome and one-click suggestions instead of a blank column. */
+.chat-empty { margin: auto 0 8px; padding: 0 4px; }
+.chat-empty__title { margin: 0 0 4px; font-size: 17px; font-weight: 650; letter-spacing: -0.01em; color: var(--text); }
+.chat-empty__sub { margin: 0 0 14px; font-size: 13px; line-height: 1.45; color: var(--text-secondary); }
+.chat-empty__list { display: flex; flex-direction: column; gap: 6px; }
+.chat-empty__item {
+  text-align: left; font: inherit; font-size: 13px; color: var(--text);
+  padding: 9px 12px; border-radius: 10px; cursor: pointer;
+  border: 1px solid var(--border); background: var(--bg);
+  transition: background 0.12s, border-color 0.12s;
+}
+.chat-empty__item:hover { background: var(--surface); border-color: var(--border-strong, var(--border)); }
+.msg-queue:empty { display: none; }

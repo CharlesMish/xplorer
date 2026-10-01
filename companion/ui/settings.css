@@ -522,3 +522,41 @@ html.grok-build body {
   color: var(--toolbar-accent);
   background: var(--toolbar-accent-soft);
 }
+/* Claude account card */
+.claude-cmd { display: flex; gap: 8px; align-items: center; margin: 8px 0; }
+.claude-cmd code {
+  flex: 1; padding: 8px 12px; border-radius: 10px; font-size: 13px;
+  background: var(--surface); border: 1px solid var(--border);
+  font-family: ui-monospace, "SF Mono", Menlo, monospace; user-select: all;
+}
+.claude-cmd input {
+  flex: 1; min-height: 36px; padding: 0 12px; border-radius: 10px; font: inherit;
+  border: 1px solid var(--border-strong, var(--border)); background: var(--input-bg); color: var(--text);
+}
+
+
+/* ---- AI Providers ---- */
+.provider-badge {
+  display: inline-block; margin-left: 8px; padding: 2px 9px; border-radius: 999px;
+  font-size: 11px; font-weight: 600; letter-spacing: 0.02em; vertical-align: 2px;
+  border: 1px solid var(--border);
+}
+.provider-badge:empty { display: none; }
+.provider-badge.on { color: #1e7a45; background: rgba(34, 170, 90, 0.12); border-color: rgba(34, 170, 90, 0.3); }
+.provider-badge.off { color: var(--text-secondary); }
+.provider-toggle { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); }
+
+/* Autosave feedback shows wherever you are. */
+.settings-toast {
+  position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%);
+  margin: 0; padding: 8px 14px; border-radius: 999px; font-size: 13px;
+  background: var(--text); color: var(--bg); box-shadow: 0 6px 20px var(--shadow);
+  z-index: 50;
+}
+.settings-toast:empty { display: none; }
+.provider-badge.on { color: var(--text); background: transparent; border-color: var(--border-strong, var(--border)); }
+.provider-badge.on::before {
+  content: ''; display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+  background: #2fbf6b; margin-right: 6px; vertical-align: 1px;
+}
+.settings-field input[type="checkbox"] { accent-color: var(--button-bg, var(--text)); }

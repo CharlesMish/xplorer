@@ -12,16 +12,31 @@ function setStatus(msg, kind = '') {
 }
 
 function fillSelect(select, models, selected) {
-  if (!select) return;
-  select.innerHTML = '';
-  for (const m of models) {
-    const opt = document.createElement('option');
-    opt.value = m.id;
-    opt.textContent = m.label || m.id;
-    if (m.id === selected) opt.selected = true;
-    select.appendChild(opt);
-  }
+  populateModelSelect(select, models, selected);
 }
+
+// Provider cards: a status badge and the "show in chat" switch.
+function setBadge(id, text, kind) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.textContent = text;
+  el.className = `provider-badge ${kind}`;
+}
+
+(function setupProviderToggles() {
+  const hidden = new Set(getHiddenProviders());
+  document.querySelectorAll('[data-provider-toggle]').forEach((box) => {
+    box.checked = !hidden.has(box.dataset.providerToggle);
+    box.addEventListener('change', () => {
+      setProviderHidden(box.dataset.providerToggle, !box.checked);
+      setStatus(box.checked ? 'Shown in the chat model list' : 'Hidden from the chat model list', 'ok');
+    });
+  });
+})();
+
+document.getElementById('open-chrome-settings')?.addEventListener('click', () => {
+  fetch('/api/open-chrome-settings', { method: 'POST' }).catch(() => {});
+});
 
 async function loadTheme() {
   try {
@@ -44,7 +59,99 @@ async function init() {
   fillSelect(searchModel, models, settings.search_model || SEARCH_DEFAULT_MODEL);
   if (maxTurns) maxTurns.value = settings.max_turns || 50;
   await loadAccount();
+  await loadClaude();
   await loadTheme();
+}
+
+// Claude sign-in: Anthropic's ant CLI prints a Console authorize URL (opened
+// in an Xplor tab by the gateway); the user pastes back the code it shows.
+async function claudeStatus() {
+  try {
+    const res = await fetch('/api/claude/status', { cache: 'no-store' });
+    if (res.ok) return await res.json();
+  } catch { /* offline */ }
+  return {};
+}
+
+async function loadClaude(prefetched) {
+  const st = prefetched || await claudeStatus();
+  const $c = (id) => document.getElementById(id);
+  const status = $c('claude-status');
+  if (!status) return;
+  const install = $c('claude-install');
+  const codeRow = $c('claude-code-row');
+  const signin = $c('claude-signin');
+  const signout = $c('claude-signout');
+  const recheck = $c('claude-recheck');
+  if (st.install_command) $c('claude-install-cmd').textContent = st.install_command;
+  if (st.install_help) $c('claude-install-help').href = st.install_help;
+
+  install.hidden = st.installed !== false;
+  recheck.hidden = st.installed !== false;
+  codeRow.hidden = !(st.running && st.url);
+  signin.hidden = !st.installed || st.signed_in || (st.running && st.url);
+  signout.hidden = !st.signed_in;
+  setBadge('claude-badge',
+    st.signed_in ? 'Connected' : (st.installed === false ? 'Needs setup' : 'Not connected'),
+    st.signed_in ? 'on' : 'off');
+  if (st.installed === false) status.textContent = 'The ant tool is not installed.';
+  else if (st.signed_in) status.textContent = 'Signed in. Claude models are in the chat model list.';
+  else if (st.running && st.url) status.textContent = 'Waiting for the code from the Claude tab.';
+  else status.textContent = st.error ? `Sign-in failed: ${st.error}` : 'Not signed in';
+
+  $c('claude-copy').onclick = async () => {
+    try {
+      await navigator.clipboard.writeText($c('claude-install-cmd').textContent);
+      $c('claude-copy').textContent = 'Copied';
+      setTimeout(() => { $c('claude-copy').textContent = 'Copy'; }, 1500);
+    } catch { /* select it instead */ }
+  };
+  recheck.onclick = () => loadClaude();
+  signin.onclick = async () => {
+    signin.disabled = true;
+    status.textContent = 'Opening the Claude sign-in tab…';
+    try {
+      const res = await fetch('/api/claude/login', { method: 'POST', cache: 'no-store' });
+      const next = await res.json();
+      if (next.error && !next.running) throw new Error(next.error);
+      await loadClaude(next);
+      $c('claude-code')?.focus();
+    } catch (e) {
+      status.textContent = e.message || 'Could not start sign-in.';
+    } finally {
+      signin.disabled = false;
+    }
+  };
+  const submit = $c('claude-code-submit');
+  submit.onclick = async () => {
+    const code = $c('claude-code').value.trim();
+    if (!code) return;
+    submit.disabled = true;
+    status.textContent = 'Finishing sign-in…';
+    try {
+      const res = await fetch('/api/claude/code', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code }),
+      });
+      const next = await res.json();
+      $c('claude-code').value = '';
+      await loadClaude(next);
+      if (next.error && !next.signed_in) status.textContent = `Sign-in failed: ${next.error}`;
+    } finally {
+      submit.disabled = false;
+    }
+  };
+  $c('claude-code').onkeydown = (e) => { if (e.key === 'Enter') submit.click(); };
+  signout.onclick = async () => {
+    signout.disabled = true;
+    try {
+      const res = await fetch('/api/claude/logout', { method: 'POST', cache: 'no-store' });
+      await loadClaude(await res.json());
+    } finally {
+      signout.disabled = false;
+    }
+  };
 }
 
 async function loadAccount() {
@@ -58,6 +165,7 @@ async function loadAccount() {
     if (res.ok) st = await res.json();
   } catch { /* unsigned */ }
   const signed = st.logged_in === true || st.has_token === true;
+  setBadge('grok-badge', signed ? 'Connected' : 'Not connected', signed ? 'on' : 'off');
   status.textContent = signed
     ? (st.account ? `Signed in as ${st.account}` : 'Signed in to Grok')
     : 'Not signed in';
@@ -339,6 +447,82 @@ document.getElementById('bookmarks-save')?.addEventListener('click', async () =>
 });
 
 loadBookmarksEditor();
+
+// --------------------------------------------------------------------------
+// Favorites editor: the pinned app row, stored under "pinned_apps" as an
+// ordered [{id,label,url}] (max 12). Same row UI as bookmarks.
+// --------------------------------------------------------------------------
+const favoritesEditor = document.getElementById('favorites-editor');
+const favoritesStatus = document.getElementById('favorites-status');
+const FAVORITES_MAX = 12;
+
+function setFavoritesStatus(msg, kind = '') {
+  if (!favoritesStatus) return;
+  favoritesStatus.textContent = msg;
+  favoritesStatus.className = 'settings-status' + (kind ? ` ${kind}` : '');
+}
+
+function syncFavoritesAdd() {
+  const add = document.getElementById('favorites-add');
+  if (add) add.disabled = favoritesEditor.children.length >= FAVORITES_MAX;
+}
+
+async function loadFavoritesEditor() {
+  if (!favoritesEditor) return;
+  let favorites = [];
+  try {
+    const settings = await fetchSettings();
+    if (Array.isArray(settings.pinned_apps)) {
+      favorites = settings.pinned_apps.map((f, i) => ({
+        id: f.id != null ? String(f.id) : String(i + 1),
+        label: f.label || '',
+        url: f.url || '',
+      }));
+    }
+  } catch (e) {
+    setFavoritesStatus(e.message, 'err');
+  }
+  favoritesEditor.innerHTML = '';
+  for (const f of favorites) favoritesEditor.appendChild(makeBookmarkRow(f));
+  syncFavoritesAdd();
+}
+
+document.getElementById('favorites-add')?.addEventListener('click', () => {
+  if (favoritesEditor.children.length >= FAVORITES_MAX) return;
+  const card = makeBookmarkRow({ id: String(favoritesEditor.children.length + 1) });
+  favoritesEditor.appendChild(card);
+  card.querySelector('.tb-label')?.focus();
+  syncFavoritesAdd();
+});
+favoritesEditor?.addEventListener('click', (e) => {
+  if (e.target.closest('.tb-pill-remove')) setTimeout(syncFavoritesAdd, 0);
+});
+
+document.getElementById('favorites-save')?.addEventListener('click', async () => {
+  const list = [];
+  favoritesEditor.querySelectorAll('.tb-pill').forEach((card, i) => {
+    let url = card.querySelector('.tb-href')?.value.trim() || '';
+    if (!url) return;
+    if (!/^https?:\/\//i.test(url)) url = 'https://' + url;
+    const label = card.querySelector('.tb-label')?.value.trim() || '';
+    list.push({ id: String(i + 1), label, url });
+  });
+  setFavoritesStatus('Saving…');
+  try {
+    await saveSettings({ pinned_apps: list });
+    setFavoritesStatus('Saved. The sidebar updates right away.', 'ok');
+    setTimeout(() => setFavoritesStatus(''), 3000);
+    loadFavoritesEditor();
+  } catch (e) {
+    setFavoritesStatus(e.message, 'err');
+  }
+});
+
+loadFavoritesEditor();
+// Right-click edits in the sidebar change the same list.
+window.addEventListener('focus', () => {
+  if (!document.activeElement?.closest?.('#favorites-editor')) loadFavoritesEditor();
+});
 
 // --------------------------------------------------------------------------
 // Updates pane. Driven by the macOS Sparkle bridge endpoints

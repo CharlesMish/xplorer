@@ -416,16 +416,72 @@ async function fetchModels() {
   ];
 }
 
-function populateModelSelect(select, models, selectedId) {
+// Providers the user hid in Settings > AI Providers. Shared by every Xplor
+// page (same origin).
+const HIDDEN_PROVIDERS_KEY = 'xplorer_hidden_providers';
+const PROVIDER_NAMES = { grok: 'Grok', claude: 'Claude' };
+
+function modelProvider(m) {
+  return m.provider || (/^claude-/.test(m.id || '') ? 'claude' : 'grok');
+}
+
+function getHiddenProviders() {
+  try { return JSON.parse(localStorage.getItem(HIDDEN_PROVIDERS_KEY) || '[]'); }
+  catch { return []; }
+}
+
+function setProviderHidden(provider, hidden) {
+  const set = new Set(getHiddenProviders());
+  if (hidden) set.add(provider); else set.delete(provider);
+  try { localStorage.setItem(HIDDEN_PROVIDERS_KEY, JSON.stringify([...set])); } catch { /* ignore */ }
+}
+
+// Models the chat picker offers: hidden providers removed, unless that would
+// leave nothing to pick.
+function visibleModels(models) {
+  const hidden = new Set(getHiddenProviders());
+  const shown = models.filter((m) => !hidden.has(modelProvider(m)));
+  return shown.length ? shown : models;
+}
+
+// Options grouped by provider. With {manage: true} a last entry opens
+// Settings > AI Providers.
+function populateModelSelect(select, models, selectedId, { manage = false } = {}) {
   if (!select) return;
   select.innerHTML = '';
+  const groups = new Map();
   for (const m of models) {
+    const p = modelProvider(m);
+    if (!groups.has(p)) groups.set(p, []);
+    groups.get(p).push(m);
+  }
+  const grouped = groups.size > 1;
+  for (const [provider, list] of groups) {
+    const parent = grouped ? document.createElement('optgroup') : select;
+    if (grouped) parent.label = PROVIDER_NAMES[provider] || provider;
+    for (const m of list) {
+      const opt = document.createElement('option');
+      opt.value = m.id;
+      opt.textContent = m.label || m.id;
+      if (m.id === selectedId) opt.selected = true;
+      parent.appendChild(opt);
+    }
+    if (grouped) select.appendChild(parent);
+  }
+  if (manage) {
     const opt = document.createElement('option');
-    opt.value = m.id;
-    opt.textContent = m.label || m.id;
-    if (m.id === selectedId) opt.selected = true;
+    opt.value = '__manage_providers__';
+    opt.textContent = 'Manage providers…';
     select.appendChild(opt);
   }
+}
+
+function openProviderSettings() {
+  fetch('/api/tabs/open-local', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path: '/settings#providers' }),
+  }).catch(() => {});
 }
 
 /** Follow macOS / system light-dark via prefers-color-scheme. */
@@ -434,12 +490,59 @@ function applySystemTheme() {
   document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
 }
 
+// The browser theme color (sidebar menu > Panel Color) reaches Xplor's own
+// pages too, the way Chrome's side panels and new-tab page follow the theme.
+// /api/theme returns Chrome's computed palette only while a color theme is on.
+const THEME_VARS = {
+  // Page = the toolbar tone, so the panel continues the sidebar and top bar.
+  // Bubbles, cards and hover fills use the deeper container tone.
+  '--bg': 'toolbar',
+  '--surface': 'surface',
+  '--surface-elevated': 'surface',
+  '--card-bg': 'frame',
+  '--input-bg': 'frame',
+  '--user-bg': 'surface',
+  '--assistant-bg': 'surface',
+  '--text': 'text',
+  '--text-secondary': 'text_secondary',
+  '--muted': 'text_secondary',
+  '--border': 'divider',
+  '--accent': 'primary',
+  '--button-bg': 'primary',
+  '--button-text': 'on_primary',
+};
+let lastPaletteKey = null;
+async function applyBrowserPalette() {
+  let palette = null;
+  try {
+    const r = await fetch('/api/theme', { cache: 'no-store' });
+    if (r.ok) palette = (await r.json()).palette || null;
+  } catch { /* keep the current look */ return; }
+  const key = palette ? JSON.stringify(palette) : '';
+  if (key === lastPaletteKey) return;
+  lastPaletteKey = key;
+  const root = document.documentElement.style;
+  for (const [cssVar, field] of Object.entries(THEME_VARS)) {
+    if (palette && palette[field]) root.setProperty(cssVar, palette[field]);
+    else root.removeProperty(cssVar);
+  }
+  document.documentElement.toggleAttribute('data-browser-theme', !!palette);
+}
+
 function startThemeWatcher() {
   applySystemTheme();
+  applyBrowserPalette();
   if (window.__grokThemeMqBound) return;
   window.__grokThemeMqBound = true;
+  window.addEventListener('focus', applyBrowserPalette);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') applyBrowserPalette();
+  });
+  setInterval(() => {
+    if (document.visibilityState === 'visible') applyBrowserPalette();
+  }, 2500);
   const mq = window.matchMedia('(prefers-color-scheme: dark)');
-  const onChange = () => applySystemTheme();
+  const onChange = () => { applySystemTheme(); lastPaletteKey = null; applyBrowserPalette(); };
   if (mq.addEventListener) mq.addEventListener('change', onChange);
   else if (mq.addListener) mq.addListener(onChange);
 }

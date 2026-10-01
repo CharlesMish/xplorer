@@ -31,9 +31,45 @@ async function api(path, opts = {}) {
   return data;
 }
 
+// Shown in a chat with no messages. Each suggestion sends as-is.
+const EMPTY_SUGGESTIONS = [
+  'Summarize this page',
+  'Organize my tabs',
+  'Open tabs about today\'s top tech news',
+  'What can you do in Xplor?',
+];
+
+function renderEmptyState() {
+  const wrap = document.createElement('div');
+  wrap.className = 'chat-empty';
+  wrap.innerHTML = '<p class="chat-empty__title">Ask Grok</p>' +
+    '<p class="chat-empty__sub">It can read this page, open and organize tabs, and search the web.</p>' +
+    '<div class="chat-empty__list"></div>';
+  const list = wrap.querySelector('.chat-empty__list');
+  for (const text of EMPTY_SUGGESTIONS) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'chat-empty__item';
+    b.textContent = text;
+    b.addEventListener('click', () => {
+      const input = document.getElementById('input');
+      const form = document.getElementById('composer');
+      if (!input || !form) return;
+      input.value = text;
+      form.requestSubmit();
+    });
+    list.appendChild(b);
+  }
+  messagesEl.appendChild(wrap);
+  syncAssistantName();
+}
+
 function renderMessages(conv) {
   messagesEl.innerHTML = '';
-  if (!conv) return;
+  if (!conv || !(conv.messages || []).length) {
+    renderEmptyState();
+    if (!conv) return;
+  }
   for (const m of conv.messages || []) {
     const div = document.createElement('div');
     div.className = `msg ${m.role}`;
@@ -300,10 +336,32 @@ async function resolveScheduleForConv(convId, hintJobId) {
   return getScheduleForConv(convId);
 }
 
+// A saved model can be one this sign-in cannot use (the OAuth proxy only
+// offers a few). Fall back to the first listed model so the picker is never
+// blank and the request goes to a model that exists.
+function usableModel(id) {
+  if (!models.length || models.some((m) => m.id === id)) return id;
+  const stored = getStoredModel();
+  return models.some((m) => m.id === stored) ? stored : models[0].id;
+}
+
+// Header, input hint and empty state name the assistant behind the model.
+function syncAssistantName() {
+  const name = /^claude-/.test(activeModel || '') ? 'Claude' : 'Grok';
+  const title = document.getElementById('chat-title');
+  if (title && (title.textContent === 'Grok' || title.textContent === 'Claude')) {
+    title.textContent = name;
+  }
+  if (input) input.placeholder = `Ask ${name} to browse, organize tabs…`;
+  const empty = document.querySelector('.chat-empty__title');
+  if (empty) empty.textContent = `Ask ${name}`;
+}
+
 function selectConv(id) {
   activeId = id;
-  activeModel = getConvModel(id);
+  activeModel = usableModel(getConvModel(id));
   if (modelSelect) modelSelect.value = activeModel;
+  syncAssistantName();
   const conv = conversations.find((c) => c.id === id);
   renderConvList();
   renderMessages(conv);
@@ -662,11 +720,63 @@ function updateTail(convId) {
 }
 
 // Each conversation streams independently — switching/closing never interrupts it.
+// "Build me a todo app", "make a snake game"... The sidebar chat runs on the
+// Grok sign-in proxy, which has no file tools, so it could only paste HTML.
+// Hand these to Grok Build instead: a real app folder built by the agent.
+const CREATE_VERB = /\b(build|create|make|generate|code|write|scaffold|spin up)\b/i;
+const APP_NOUN = /\b(app|apps|application|web ?app|website|site|landing page|game|dashboard|tool|widget|extension|prototype|tracker|calculator|clone)\b/i;
+function wantsCreateApp(text) {
+  if (!CREATE_VERB.test(text) || !APP_NOUN.test(text)) return false;
+  // Questions about an app or this page are chat, not a build.
+  if (/\b(this page|this site|this app|how (do|does|to)|what is|explain|summari[sz]e)\b/i.test(text)) return false;
+  return true;
+}
+
+async function startAppFromChat(text, fromConvId) {
+  if (fromConvId === activeId) input.value = '';
+  let app;
+  try {
+    const r = await fetch('/api/apps', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: text }),
+    });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok || !data.app?.id) throw new Error(data.error || r.statusText);
+    app = data.app;
+  } catch (e) {
+    input.value = text;
+    alertInline(`Could not create the app: ${e.message}`);
+    return;
+  }
+  await refresh();
+  if (app.conversation_id) selectConv(app.conversation_id);
+  // Live preview in a tab. The build streams here in the panel.
+  fetch('/api/tabs/open-local', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path: `/app?id=${encodeURIComponent(app.id)}&nochat=1` }),
+  }).catch(() => {});
+  if (app.conversation_id) sendMessage(text, { convId: app.conversation_id });
+}
+
+function alertInline(message) {
+  const div = document.createElement('div');
+  div.className = 'msg assistant';
+  div.textContent = message;
+  messagesEl.appendChild(div);
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+}
+
 async function sendMessage(text, { retry = false, convId = activeId } = {}) {
   text = (text || '').trim();
   if (!text || !convId) return;
   const conv = conversations.find((c) => c.id === convId);
   if (!conv) return;
+  if (!retry && conv.kind !== 'app' && wantsCreateApp(text)) {
+    if (!(await ensureGrokReady())) return;  // Grok Build needs the CLI
+    return startAppFromChat(text, convId);
+  }
   if (isRunning(convId)) { enqueueMessage(convId, text); if (convId === activeId) input.value = ''; return; }
   if (!(await ensureGrokReady())) return;
 
@@ -679,7 +789,7 @@ async function sendMessage(text, { retry = false, convId = activeId } = {}) {
     if (convId === activeId) input.value = '';
   }
 
-  const st = { aborter: new AbortController(), running: true, reply: '', status: 'Grok is thinking…', thinking: '', error: null, model, lastEventAt: Date.now() };
+  const st = { aborter: new AbortController(), running: true, reply: '', status: `${/^claude-/.test(model || '') ? 'Claude' : 'Grok'} is thinking…`, thinking: '', error: null, model, lastEventAt: Date.now() };
   streams[convId] = st;
   if (convId === activeId) { renderMessages(conv); setComposerRunning(); }
   updateActiveBadge();
@@ -694,7 +804,9 @@ async function sendMessage(text, { retry = false, convId = activeId } = {}) {
     const res = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message: text, model }),
+      // App builds run the grok CLI, whose model names differ from chat's.
+      // Leave the model out so the CLI uses its own default.
+      body: JSON.stringify(appBuild ? { message: text } : { message: text, model }),
       signal: st.aborter.signal,
     });
     if (!res.ok) { const err = await res.json().catch(() => ({})); throw new Error(err.error || res.statusText); }
@@ -1153,21 +1265,24 @@ async function initModels() {
       persistModel(activeModel);
     }
   } catch { /* use localStorage fallback */ }
-  models = await fetchModels();
+  models = visibleModels(await fetchModels());
   // Never clobber a remembered choice: only re-pick when the list is non-empty
   // and the saved model truly isn't in it — and even then prefer the stored
   // model over models[0] (which is composer-fast and would silently reset it).
-  if (models.length && !models.some((m) => m.id === activeModel)) {
-    const stored = getStoredModel();
-    activeModel = models.some((m) => m.id === stored) ? stored : models[0].id;
-  }
-  populateModelSelect(modelSelect, models, activeModel);
+  activeModel = usableModel(activeModel);
+  populateModelSelect(modelSelect, models, activeModel, { manage: true });
 }
 
 modelSelect?.addEventListener('change', async () => {
   const next = modelSelect.value;
+  if (next === '__manage_providers__') {
+    modelSelect.value = activeModel;
+    openProviderSettings();
+    return;
+  }
   if (next === activeModel) return;
   activeModel = next;
+  syncAssistantName();
   persistModel(activeModel);
   try {
     await saveSettings({ model: activeModel });
@@ -1307,4 +1422,12 @@ window.addEventListener('storage', (e) => {
 });
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') consumePendingApp();
+});
+// Settings > AI Providers can hide a provider; follow it without a reload.
+window.addEventListener('storage', async (e) => {
+  if (e.key !== HIDDEN_PROVIDERS_KEY) return;
+  models = visibleModels(await fetchModels());
+  activeModel = usableModel(activeModel);
+  populateModelSelect(modelSelect, models, activeModel, { manage: true });
+  syncAssistantName();
 });

@@ -1,0 +1,249 @@
+/* Xplor shared polish layer.
+   Loaded last on every companion page so buttons, cards, inputs, headings and
+   empty states look the same on Settings, Apps, Schedules, Logs and Search.
+   Page stylesheets keep layout; this file owns the look. */
+
+:root,
+html[data-theme="light"] {
+  --border: rgba(0, 0, 0, 0.09);
+  --border-strong: rgba(0, 0, 0, 0.16);
+  --surface: #f6f6f7;
+  --surface-elevated: #efeff1;
+  --text: #111113;
+  --text-secondary: #6b6b73;
+  --input-bg: #ffffff;
+  --focus: rgba(0, 0, 0, 0.14);
+  --radius-sm: 8px;
+  --radius: 10px;
+  --radius-lg: 14px;
+}
+
+html[data-theme="dark"] {
+  --bg: #0b0b0c;
+  --border: rgba(255, 255, 255, 0.09);
+  --border-strong: rgba(255, 255, 255, 0.18);
+  --surface: #151517;
+  --surface-elevated: #1c1c1f;
+  --text: #f3f3f5;
+  --text-secondary: #9c9ca5;
+  --input-bg: #111113;
+  --focus: rgba(255, 255, 255, 0.18);
+  --radius-sm: 8px;
+  --radius: 10px;
+  --radius-lg: 14px;
+}
+
+@media (prefers-color-scheme: dark) {
+  html:not([data-theme]) {
+    --bg: #0b0b0c;
+    --border: rgba(255, 255, 255, 0.09);
+    --border-strong: rgba(255, 255, 255, 0.18);
+    --surface: #151517;
+    --surface-elevated: #1c1c1f;
+    --text: #f3f3f5;
+    --text-secondary: #9c9ca5;
+    --input-bg: #111113;
+    --focus: rgba(255, 255, 255, 0.18);
+  }
+}
+
+/* Component display rules below (inline-flex buttons) would otherwise
+   override the hidden attribute and show buttons that should be gone. */
+[hidden] { display: none !important; }
+
+html { scrollbar-gutter: stable; }
+
+html, body {
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* ---- Page headers: one type scale everywhere ---- */
+.settings-head h1,
+.apps-hero h1,
+.logs-head h1,
+.sched-shell h1,
+.settings-page h1 {
+  font-size: 26px;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+  margin: 0 0 6px;
+}
+.settings-head p,
+.apps-hero p,
+.logs-head p,
+.sched-placeholder p {
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  max-width: 62ch;
+}
+
+/* ---- Cards: white on white with a hairline, not grey slabs ---- */
+.settings-card,
+.logs-table-wrap,
+.sched-list-col {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: none;
+}
+.settings-card { padding: 20px 22px; }
+.settings-card h2 {
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  margin: 0 0 6px;
+}
+.settings-hint,
+.settings-card > p {
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+/* ---- Settings navigation: quiet list, no boxed panel ---- */
+.settings-sidebar {
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  padding: 0;
+}
+.settings-nav-btn {
+  border-radius: var(--radius-sm);
+  font-size: 14px;
+  font-weight: 500;
+  padding: 7px 12px;
+  color: var(--text-secondary);
+  background: transparent;
+}
+.settings-nav-btn:hover { background: var(--surface); color: var(--text); }
+.settings-nav-btn.active { background: var(--surface-elevated); color: var(--text); }
+
+/* ---- Buttons ---- */
+.settings-btn,
+.apps-btn,
+.logs-btn,
+.apps-filter,
+.sched-back-btn {
+  height: 32px;
+  padding: 0 14px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border-strong);
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  white-space: nowrap;
+  box-shadow: 0 1px 1px rgba(0, 0, 0, 0.03);
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s;
+}
+.settings-btn:hover,
+.apps-btn:hover:not(:disabled),
+.logs-btn:hover,
+.apps-filter:hover {
+  background: var(--surface);
+  border-color: var(--border-strong);
+}
+.settings-btn-primary,
+.apps-btn.primary {
+  background: var(--button-bg);
+  color: var(--button-text);
+  border-color: var(--button-bg);
+}
+.settings-btn-primary:hover,
+.apps-btn.primary:hover:not(:disabled) {
+  background: var(--button-bg);
+  opacity: 0.88;
+}
+.apps-btn.danger,
+.sched-btn-danger { color: #d0342c; }
+
+/* Filter pills: selected is filled, the rest are quiet. */
+.apps-filter {
+  height: 28px;
+  padding: 0 12px;
+  border-radius: 999px;
+  border-color: var(--border);
+  color: var(--text-secondary);
+  box-shadow: none;
+}
+.apps-filter.active {
+  background: var(--text);
+  border-color: var(--text);
+  color: var(--bg);
+}
+
+/* ---- Inputs ---- */
+.settings-field select,
+.settings-field input[type="text"],
+.settings-field input[type="number"],
+.settings-field input[type="url"],
+.settings-field textarea,
+.logs-controls select {
+  min-height: 36px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border-strong);
+  background-color: var(--input-bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
+  padding: 0 12px;
+}
+.settings-field textarea { padding: 10px 12px; }
+.settings-field select:focus,
+.settings-field input:focus,
+.settings-field textarea:focus,
+.logs-controls select:focus {
+  outline: none;
+  border-color: var(--text-secondary);
+  box-shadow: 0 0 0 3px var(--focus);
+}
+.settings-field label,
+.settings-field > span {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+/* ---- Tables ---- */
+.logs-table th {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--text-secondary);
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+
+/* ---- Empty states: centred and plain, not italic ---- */
+.apps-empty,
+.sched-empty,
+.logs-empty {
+  font-style: normal;
+  color: var(--text-secondary);
+  font-size: 14px;
+}
+.apps-empty {
+  margin-top: 48px;
+  padding: 40px 24px;
+  text-align: center;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-lg);
+}
+
+/* "Back to chat" only makes sense in the side panel. In a full tab it is a
+   stray link above the title, so keep it small and quiet. */
+.settings-back,
+.sched-back-btn {
+  font-size: 13px;
+  color: var(--text-secondary);
+}
