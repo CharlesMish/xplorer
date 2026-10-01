@@ -8,6 +8,7 @@ survives upstream churn better than context diffs.
 import re
 import sys
 from pathlib import Path
+import subprocess
 
 MARKER = "// XPLORER"
 
@@ -298,7 +299,8 @@ def patch_hide_top_toolbar(src: Path):
     """Arc: the address field lives above the sidebar, not across the page."""
     path = src / "chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.cc"
     text = path.read_text()
-    if "XPLORER: address field lives in the sidebar" in text:
+    if ("XPLORER: address field lives in the sidebar" in text or
+            "XPLORER: a compact address strip" in text):
         print(f"  skip (already applied): {path.name}")
         return
     old = "  const bool toolbar_visible = delegate().IsToolbarVisible();\n"
@@ -343,35 +345,7 @@ def patch_skip_crashed_session_bubble(src: Path):
 def patch_sidebar_location_focus(src: Path):
     """Cmd-L focuses the sidebar field once the top toolbar is hidden."""
     view = src / "chrome/browser/ui/views/frame/browser_view.cc"
-    text = view.read_text()
-    if "XPLORER: address field lives in the sidebar" not in text:
-        old = (
-            "#endif\n"
-            "  if (!IsLocationBarVisible()) {\n"
-            "    return;\n"
-            "  }\n"
-            "\n"
-            "  LocationBar* location_bar = GetLocationBar();\n"
-        )
-        new = (
-            "#endif\n"
-            "  // XPLORER: address field lives in the sidebar.\n"
-            "  if (xplorer_sidebar_chrome_) {\n"
-            "    xplorer_sidebar_chrome_->FocusUrlField(is_user_initiated);\n"
-            "    return;\n"
-            "  }\n"
-            "  if (!IsLocationBarVisible()) {\n"
-            "    return;\n"
-            "  }\n"
-            "\n"
-            "  LocationBar* location_bar = GetLocationBar();\n"
-        )
-        if old not in text:
-            sys.exit(f"ANCHOR NOT FOUND in {view} (sidebar location focus)")
-        view.write_text(text.replace(old, new, 1))
-        print(f"  edited: {view}")
-    else:
-        print(f"  skip (already applied): {view.name}")
+    print(f"  skip (address is the top strip): {view.name}")
 
     commands = src / "chrome/browser/ui/browser_command_controller.cc"
     text = commands.read_text()
@@ -699,7 +673,8 @@ def patch_floating_address_pill(src: Path):
     """Dia: a short capsule in the toolbar, not a Chrome bar across the window."""
     toolbar = src / "chrome/browser/ui/views/toolbar/toolbar_view.cc"
     text = toolbar.read_text()
-    if "XPLORER: floating address pill" in text:
+    if ("XPLORER: floating address pill" in text or
+            "XPLORER: compact top address" in text):
         print(f"  skip (already applied): {toolbar}")
     else:
         old = (
@@ -991,7 +966,8 @@ def patch_quiet_toolbar_scale(src: Path):
 
     toolbar = src / "chrome/browser/ui/views/toolbar/toolbar_view.cc"
     text = toolbar.read_text()
-    if "XPLORER: quiet toolbar scale" in text:
+    if ("XPLORER: quiet toolbar scale" in text or
+            "XPLORER: compact top address" in text):
         print(f"  skip (already applied): {toolbar}")
         return
     old = (
@@ -1759,6 +1735,72 @@ def patch_collapse_sidebar(src: Path):
             "  }\n"
             "#endif\n"
             "}",
+        )
+
+
+def patch_sidebar_space_menu(src: Path):
+    """Arc: the space menu is the sidebar's menu, not only the space-name row."""
+    region = src / "chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc"
+    text = region.read_text()
+    if "space menu belongs to the whole sidebar" in text:
+        return
+    edit(
+        region,
+        "  xplorer_sidebar_chrome_->SetProperty(\n"
+        "      views::kFlexBehaviorKey,\n"
+        "      views::FlexSpecification(views::MinimumFlexSizeRule::kPreferred,\n"
+        "                               views::MaximumFlexSizeRule::kPreferred));\n"
+        "}",
+        "  xplorer_sidebar_chrome_->SetProperty(\n"
+        "      views::kFlexBehaviorKey,\n"
+        "      views::FlexSpecification(views::MinimumFlexSizeRule::kPreferred,\n"
+        "                               views::MaximumFlexSizeRule::kPreferred));\n"
+        "  // XPLORER: Arc's space menu belongs to the whole sidebar. Tabs and folder\n"
+        "  // headers keep their own menus because those views install a controller.\n"
+        "  set_context_menu_controller(xplorer_sidebar_chrome_);\n"
+        "}",
+    )
+
+
+def patch_folder_rows(src: Path):
+    """Arc folders: no colored group rail, folder icon on the header."""
+    layout = src / "chrome/browser/ui/views/tabs/common/tab_group_view_layout.cc"
+    text = layout.read_text()
+    if "XPLORER: folders are icon" not in text:
+        edit(
+            layout,
+            "  const bool show_group_line =\n"
+            "      !tab_group_view->IsGroupFocused() && !tab_group_view->is_collapsed();",
+            "  // XPLORER: folders are icon + name. The colored group rail is the\n"
+            "  // orange bar beside Bookmarks.\n"
+            "  const bool show_group_line = false;",
+        )
+    header = src / "chrome/browser/ui/views/tabs/common/tab_group_header_view.cc"
+    htext = header.read_text()
+    if "a vertical group is a folder row" not in htext:
+        edit(
+            header,
+            "    sync_icon_->SetVisible(is_shared_);\n"
+            "    if (is_shared_) {\n"
+            "      sync_icon_->SetImage(ui::ImageModel::FromVectorIcon(\n"
+            "          features::IsRoundedIconsEnabled() ? kGroupCustomIcon\n"
+            "                                            : kPeopleGroupOldIcon,\n"
+            "          foreground_color, kIconSize));\n"
+            "    }",
+            "    // XPLORER: a vertical group is a folder row (icon + name).\n"
+            "    if (orientation_ == TabStripOrientation::kVertical && !is_shared_) {\n"
+            "      sync_icon_->SetVisible(true);\n"
+            "      sync_icon_->SetImage(ui::ImageModel::FromVectorIcon(\n"
+            "          vector_icons::kFolderOpenIcon, foreground_color, kIconSize));\n"
+            "    } else {\n"
+            "      sync_icon_->SetVisible(is_shared_);\n"
+            "      if (is_shared_) {\n"
+            "        sync_icon_->SetImage(ui::ImageModel::FromVectorIcon(\n"
+            "            features::IsRoundedIconsEnabled() ? kGroupCustomIcon\n"
+            "                                              : kPeopleGroupOldIcon,\n"
+            "            foreground_color, kIconSize));\n"
+            "      }\n"
+            "    }",
         )
 
 
@@ -2673,7 +2715,64 @@ def patch_vertical_sidebar(src: Path):
     )
 
 
+# Release version. chrome/VERSION PATCH = MIN*100 + PAT (0.8.15 -> 815) so the
+# Windows installer and Sparkle (CFBundleVersion) see every release as newer.
+RELEASE_VERSION = "0.8.15"
+
+# Every Chromium-file edit, captured from the reference macOS tree as one patch
+# against the pin (after apply.sh's copy steps). The anchor edits below drifted
+# from the tree (hand edits were never ported back), so a clean apply failed with
+# ANCHOR NOT FOUND and Windows/Linux built without them. Regenerate with
+# scripts/regen_chromium_patch.sh after changing Chromium files.
+CHROMIUM_PATCH = Path(__file__).resolve().parent / "xplorer_chromium.diff"
+
+
+def stamp_version(src: Path):
+    ver = RELEASE_VERSION
+    ss = src / "chrome/app/settings_strings.grdp"
+    sst = ss.read_text(encoding="utf-8")
+    sst2 = re.sub(r"Xplor [0-9][0-9.]* · Xplor", "Xplor " + ver + " · Xplor", sst, count=1)
+    if sst2 != sst:
+        ss.write_text(sst2, encoding="utf-8")
+        print(f"  stamped about version -> {ver}")
+    maj, minor, pat = (int(x) for x in ver.split("."))
+    vf = src / "chrome/VERSION"
+    v = vf.read_text()
+    v2 = re.sub(r"(?m)^PATCH=\d+$", f"PATCH={minor * 100 + pat}", v)
+    if v2 != v:
+        vf.write_text(v2)
+        print(f"  stamped chrome/VERSION PATCH -> {minor * 100 + pat}")
+
+
+def apply_chromium_patch(src: Path) -> bool:
+    """Applies xplorer_chromium.diff. Returns False if the file is absent."""
+    if not CHROMIUM_PATCH.exists():
+        return False
+    base = ["git", "-C", str(src), "apply", "--whitespace=nowarn"]
+    if subprocess.run(base + ["--check", str(CHROMIUM_PATCH)],
+                      capture_output=True).returncode == 0:
+        subprocess.run(base + [str(CHROMIUM_PATCH)], check=True)
+        print(f"  applied {CHROMIUM_PATCH.name}")
+    elif subprocess.run(base + ["--reverse", "--check", str(CHROMIUM_PATCH)],
+                        capture_output=True).returncode == 0:
+        print(f"  {CHROMIUM_PATCH.name} already applied")
+    else:
+        r = subprocess.run(base + ["--check", str(CHROMIUM_PATCH)],
+                           capture_output=True, text=True)
+        sys.exit("xplorer_chromium.diff does not apply. Revert the chromium "
+                 "tree to the pin (from inside it: git reset --hard HEAD; "
+                 "git clean -fd chrome) and run apply again.\n" + r.stderr[-2000:])
+    return True
+
+
 def main(src: Path):
+    if apply_chromium_patch(src):
+        stamp_version(src)
+        return
+    legacy_main(src)
+
+
+def legacy_main(src: Path):
     # 1. Start the AgentGateway once the browser UI is up.
     main_cc = src / "chrome/browser/chrome_browser_main.cc"
     # Must run after profile init (PostBrowserStart); earlier hooks crash on
@@ -4005,6 +4104,8 @@ def main(src: Path):
         print(f"  edited: {lsc}")
 
     # Arc-style vertical sidebar: "Tabs" section label + agent tab group.
+    patch_sidebar_space_menu(src)
+    patch_folder_rows(src)
     patch_vertical_sidebar(src)
     patch_collapse_sidebar(src)
     patch_soft_tab_pills(src)
