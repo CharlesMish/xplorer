@@ -190,6 +190,7 @@ std::string BuildFabInjectScript() {
     clearNode(fab);
     fab.appendChild(createGrokIcon());
     var label=document.createElement('span');
+    label.className='xfab-label';
     label.textContent='Grok';
     fab.appendChild(label);
   }
@@ -208,6 +209,10 @@ std::string BuildFabInjectScript() {
     +'#xplorer-grok-fab:hover{background:#f7f9f9;border-color:#aab8c2;transform:translateY(-1px);box-shadow:0 4px 14px rgba(15,20,25,.16)}'
     +'#xplorer-grok-fab:disabled{opacity:.65;cursor:wait;transform:none}'
     +'.xfab-grok-icon{width:15px;height:15px;fill:currentColor;display:block;flex-shrink:0}'
+    +'#xplorer-grok-fab{gap:0;padding:7px;opacity:.72}'
+    +'#xplorer-grok-wrap:hover #xplorer-grok-fab,#xplorer-grok-fab:focus-visible{opacity:1;gap:6px;padding:7px 12px 7px 9px}'
+    +'.xfab-label{max-width:0;overflow:hidden;white-space:nowrap;transition:max-width .15s}'
+    +'#xplorer-grok-wrap:hover .xfab-label,#xplorer-grok-fab:focus-visible .xfab-label{max-width:48px}'
     +'@media (prefers-color-scheme:dark){'
     +'#xplorer-grok-fab{background:#000;color:#fff;border-color:#2f3336;box-shadow:0 2px 12px rgba(0,0,0,.45)}'
     +'#xplorer-grok-fab:hover{background:#16181c;border-color:#536471}'

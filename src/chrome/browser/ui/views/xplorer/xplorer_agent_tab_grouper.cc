@@ -108,8 +108,8 @@ bool IsAdHocAgentTab(content::WebContents* wc) {
 }
 
 std::u16string GroupTitle(std::u16string_view prefix, int count) {
-  return std::u16string(prefix) + u" (" + base::NumberToString16(count) +
-         u")";
+  (void)count;
+  return std::u16string(prefix);
 }
 
 std::vector<int> IndicesInGroup(TabStripModel* model,
@@ -131,17 +131,17 @@ std::optional<tab_groups::TabGroupId> FindGroupWithPrefix(
   if (!model->group_model()) {
     return std::nullopt;
   }
-  // A managed group's title is exactly "<prefix> (N)". Match on the prefix
-  // FOLLOWED BY the " (" count suffix so e.g. prefix "Agent: foo" does not also
-  // match a sibling group "Agent: foobar (5)". (Reserved prefixes still match:
-  // "Bookmarks (7)" starts with "Bookmarks (", "Scheduled task tabs (1)" with
-  // "Scheduled task tabs (".)
-  const std::u16string needle = std::u16string(prefix) + u" (";
+  // Titles are the folder name. Also accept the older "<prefix> (N)" form.
+  // The " (" suffix keeps "Agent: foo" from matching "Agent: foobar (5)".
+  const std::u16string legacy = std::u16string(prefix) + u" (";
   for (const tab_groups::TabGroupId& id :
        model->group_model()->ListTabGroups()) {
     TabGroup* group = model->group_model()->GetTabGroup(id);
-    if (group && group->visual_data() &&
-        base::StartsWith(group->visual_data()->title(), needle)) {
+    if (!group || !group->visual_data()) {
+      continue;
+    }
+    const std::u16string& title = group->visual_data()->title();
+    if (title == prefix || base::StartsWith(title, legacy)) {
       return id;
     }
   }
@@ -163,8 +163,17 @@ tab_groups::TabGroupId EnsureGroup(TabStripModel* model,
                                    const std::vector<int>& indices,
                                    tab_groups::TabGroupColorId color) {
   std::optional<tab_groups::TabGroupId> existing = FindGroupWithPrefix(model, prefix);
+  bool collapsed = false;
+  if (existing.has_value() && model->group_model()) {
+    TabGroup* current = model->group_model()->GetTabGroup(existing.value());
+    if (current && current->visual_data()) {
+      collapsed = current->visual_data()->is_collapsed();
+    }
+  }
+  // Keep a closed folder closed. A fresh visual defaults to expanded, and
+  // Reconcile runs on the collapse itself.
   tab_groups::TabGroupVisualData visual(
-      GroupTitle(prefix, static_cast<int>(indices.size())), color);
+      GroupTitle(prefix, static_cast<int>(indices.size())), color, collapsed);
   if (existing.has_value()) {
     // Only fire ChangeTabGroupVisuals when the visuals actually changed:
     // SetVisualData has no equality check and fans out OnTabGroupChanged
@@ -699,9 +708,14 @@ bool AgentTabGrouper::OpenMissingBookmarkTabs(
     params.disposition = WindowOpenDisposition::NEW_BACKGROUND_TAB;
     Navigate(&params);
     if (params.navigated_or_inserted_contents) {
-      agent_gateway::TabOwnership::GetOrCreate(
-          params.navigated_or_inserted_contents)
-          ->bookmark_node_id = node_id;
+      agent_gateway::TabOwnership* own = agent_gateway::TabOwnership::GetOrCreate(
+          params.navigated_or_inserted_contents);
+      own->bookmark_node_id = node_id;
+      // The sidebar shows this name instead of the page title. Three X
+      // bookmarks all titled "X - The Everything App" looked like duplicates.
+      if (const std::string* label = config.FindString("label")) {
+        own->label = *label;
+      }
       present_ids.push_back(node_id);
       opened_any = true;
     }

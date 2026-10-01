@@ -31,6 +31,7 @@
 #include "base/command_line.h"
 #include "base/files/file.h"
 #include "base/files/file_path.h"
+#include "base/files/file_enumerator.h"
 #include "base/files/file_util.h"
 #include "base/json/json_reader.h"
 #include "base/json/json_writer.h"
@@ -85,6 +86,11 @@
 #include "net/traffic_annotation/network_traffic_annotation_test_helper.h"
 
 namespace agent_gateway {
+
+std::vector<base::FilePath> GrokAuthFiles();
+base::DictValue RunOAuthChatBlocking(const std::string& message,
+                                     const std::string& model,
+                                     const std::string& rules);
 
 std::string LoadGrokAccountLabel();
 std::string LoadGrokOAuthAccessToken();
@@ -737,6 +743,12 @@ std::string ScheduledBrowserRules(const std::string& job_id,
 }
 
 std::string ModelDisplayName(const std::string& model) {
+  if (model == "claude-opus-5")
+    return "Claude Opus 5";
+  if (model == "claude-sonnet-5")
+    return "Claude Sonnet 5";
+  if (model == "claude-haiku-4-5")
+    return "Claude Haiku 4.5";
   if (model == "grok-composer-2.5-fast")
     return "Composer 2.5";
   if (model == "grok-build")
@@ -1799,8 +1811,12 @@ base::CommandLine BuildGrokSearchCommand(const std::string& query,
   cmd.AppendArg("--output-format");
   cmd.AppendArg(streaming ? "streaming-json" : "json");
   cmd.AppendArg("--always-approve");
-  cmd.AppendArg("-m");
-  cmd.AppendArg(model);
+  // No model means the CLI's own default, which always exists on this
+  // install. A stale name here fails the whole run.
+  if (!model.empty()) {
+    cmd.AppendArg("-m");
+    cmd.AppendArg(model);
+  }
   cmd.AppendArg("--max-turns");
   // Vision on an attached image is a single-shot describe — cap turns hard so
   // grok-composer can't loop trying to "find similar images" (it has no web
@@ -2022,19 +2038,253 @@ void SaveChatAssistantReply(const std::string& conv_id,
   SaveSessions(data);
 }
 
+bool MessageWantsOpenTabs(const std::string& message) {
+  const std::string lower = base::ToLowerASCII(message);
+  const bool verb = lower.find("open") != std::string::npos ||
+                    lower.find("visit") != std::string::npos ||
+                    lower.find("launch") != std::string::npos;
+  if (!verb)
+    return false;
+  if (lower.find("organiz") != std::string::npos ||
+      lower.find("organis") != std::string::npos)
+    return false;
+  return lower.find("tab") != std::string::npos ||
+         lower.find("site") != std::string::npos ||
+         lower.find("page") != std::string::npos ||
+         lower.find("website") != std::string::npos;
+}
+
+struct TabToOpen {
+  std::string url;
+  std::string title;
+};
+
+void CollectHttpsTabs(const std::string& text, std::vector<TabToOpen>* out) {
+  size_t at = 0;
+  while (out->size() < 10 &&
+         (at = text.find("https://", at)) != std::string::npos) {
+    size_t end = at;
+    while (end < text.size()) {
+      const char c = text[end];
+      if (c == '"' || c == '\'' || c == ' ' || c == '\n' || c == '\r' ||
+          c == ')' || c == ']' || c == ',' || c == '<' || c == '>')
+        break;
+      ++end;
+    }
+    std::string url = text.substr(at, end - at);
+    while (!url.empty() && (url.back() == '.' || url.back() == ';'))
+      url.pop_back();
+    GURL gurl(url);
+    if (gurl.is_valid() && gurl.SchemeIs("https")) {
+      bool dup = false;
+      for (const TabToOpen& existing : *out) {
+        if (existing.url == gurl.spec())
+          dup = true;
+      }
+      if (!dup)
+        out->emplace_back(std::string(gurl.spec()), std::string(gurl.host()));
+    }
+    at = end;
+  }
+}
+
+std::vector<TabToOpen> TabsFromModelText(const std::string& text) {
+  std::vector<TabToOpen> tabs;
+  std::string json = text;
+  const size_t fence = json.find("```");
+  if (fence != std::string::npos) {
+    size_t start = json.find('\n', fence);
+    size_t end = json.find("```", fence + 3);
+    if (start != std::string::npos && end != std::string::npos && end > start)
+      json = json.substr(start + 1, end - start - 1);
+  }
+  const size_t obj = json.find('{');
+  const size_t obj_end = json.rfind('}');
+  if (obj != std::string::npos && obj_end != std::string::npos &&
+      obj_end > obj) {
+    if (auto parsed = base::JSONReader::ReadDict(
+            json.substr(obj, obj_end - obj + 1), base::JSON_PARSE_RFC)) {
+      if (const base::ListValue* list = parsed->FindList("tabs")) {
+        for (const base::Value& v : *list) {
+          if (tabs.size() >= 10 || !v.is_dict())
+            continue;
+          const std::string* url = v.GetDict().FindString("url");
+          const std::string* title = v.GetDict().FindString("title");
+          if (!url)
+            continue;
+          GURL gurl(*url);
+          if (!gurl.is_valid() || !gurl.SchemeIs("https"))
+            continue;
+          tabs.emplace_back(std::string(gurl.spec()),
+                            title && !title->empty() ? *title
+                                                     : std::string(gurl.host()));
+        }
+      }
+    }
+  }
+  if (tabs.empty())
+    CollectHttpsTabs(text, &tabs);
+  return tabs;
+}
+
+std::string FormatOpenedTabsReply(const std::vector<TabToOpen>& tabs,
+                                  int opened) {
+  if (opened <= 0)
+    return "I could not open those tabs. Ask again with the sites you want.";
+  std::string reply = "Opened " + base::NumberToString(opened) +
+                      (opened == 1 ? " tab:\n" : " tabs:\n");
+  for (int i = 0; i < opened && i < static_cast<int>(tabs.size()); ++i) {
+    reply += "- ";
+    reply += tabs[i].title.empty() ? tabs[i].url : tabs[i].title;
+    reply += "\n";
+  }
+  return reply;
+}
+
+void EmitChatReply(net::HttpServer* server,
+                   scoped_refptr<base::SingleThreadTaskRunner> io,
+                   int connection_id,
+                   const std::string& conv_id,
+                   const std::string& reply,
+                   const std::string& model = "native") {
+  if (!conv_id.empty() && !reply.empty())
+    SaveChatAssistantReply(conv_id, reply, "");
+  const std::string shown = model.empty() ? "native" : model;
+  const std::string label =
+      shown == "native" ? std::string("Xplor") : ModelDisplayName(shown);
+  io->PostTask(
+      FROM_HERE,
+      base::BindOnce(
+          [](net::HttpServer* srv, int cid, std::string reply,
+             std::string shown, std::string label) {
+            BeginNdjsonStreamWithMeta(srv, cid, shown, "chat");
+            base::DictValue text_evt;
+            text_evt.Set("type", "text");
+            text_evt.Set("data", reply);
+            std::string line;
+            base::JSONWriter::Write(text_evt, &line);
+            line.push_back('\n');
+            SendHttpChunk(srv, cid, std::move(line));
+            base::DictValue done;
+            done.Set("type", "result");
+            done.Set("reply", reply);
+            done.Set("text", reply);
+            done.Set("model", shown);
+            done.Set("model_label", label);
+            std::string done_line;
+            base::JSONWriter::Write(done, &done_line);
+            done_line.push_back('\n');
+            SendHttpChunk(srv, cid, std::move(done_line));
+            EndNdjsonStream(srv, cid);
+          },
+          server, connection_id, reply, shown, label));
+}
+
+void RunOpenTabsFastPath(
+    net::HttpServer* server,
+    scoped_refptr<base::SingleThreadTaskRunner> io_task_runner,
+    int connection_id,
+    std::string conv_id,
+    std::string message,
+    std::string model) {
+  base::ThreadPool::CreateSequencedTaskRunner(
+      {base::MayBlock(), base::TaskPriority::USER_VISIBLE,
+       base::TaskShutdownBehavior::CONTINUE_ON_SHUTDOWN})
+      ->PostTask(
+          FROM_HERE,
+          base::BindOnce(
+              [](net::HttpServer* srv,
+                 scoped_refptr<base::SingleThreadTaskRunner> io, int cid,
+                 std::string conv_id, std::string message, std::string model) {
+                const std::string prompt =
+                    "The user wants real web pages opened as browser tabs.\n"
+                    "Request: " +
+                    message +
+                    "\nReply with ONLY a JSON object, no markdown:\n"
+                    "{\"tabs\":[{\"url\":\"https://example.com/page\","
+                    "\"title\":\"Short name\"}]}\n"
+                    "Use the count they asked for, at most 10. Every url "
+                    "must be https and a real page about the topic.";
+                base::DictValue result = RunOAuthChatBlocking(
+                    prompt, model,
+                    "Reply with only the JSON object. No markdown, no prose.");
+                std::vector<TabToOpen> tabs;
+                if (const std::string* text = result.FindString("text"))
+                  tabs = TabsFromModelText(*text);
+                std::string error;
+                if (const std::string* err = result.FindString("error"))
+                  error = *err;
+                content::GetUIThreadTaskRunner({})->PostTask(
+                    FROM_HERE,
+                    base::BindOnce(
+                        [](net::HttpServer* srv,
+                           scoped_refptr<base::SingleThreadTaskRunner> io,
+                           int cid, std::string conv_id,
+                           std::vector<TabToOpen> tabs, std::string error) {
+                          int opened = 0;
+                          Profile* profile =
+                              ProfileManager::GetLastUsedProfile();
+                          if (profile) {
+                            for (const TabToOpen& tab : tabs) {
+                              GURL url(tab.url);
+                              if (!url.is_valid() || !url.SchemeIs("https"))
+                                continue;
+                              NavigateParams params(profile, url,
+                                                    ui::PAGE_TRANSITION_LINK);
+                              params.disposition =
+                                  opened == 0
+                                      ? WindowOpenDisposition::
+                                            NEW_FOREGROUND_TAB
+                                      : WindowOpenDisposition::
+                                            NEW_BACKGROUND_TAB;
+                              Navigate(&params);
+                              ++opened;
+                            }
+                          }
+                          std::string reply =
+                              opened > 0 ? FormatOpenedTabsReply(tabs, opened)
+                                         : (error.empty()
+                                                ? "I could not open those tabs."
+                                                : error);
+                          EmitChatReply(srv, io, cid, conv_id, reply);
+                        },
+                        srv, io, cid, std::move(conv_id), std::move(tabs),
+                        std::move(error)));
+              },
+              server, io_task_runner, connection_id, std::move(conv_id),
+              std::move(message), std::move(model)));
+}
+
 [[maybe_unused]] bool MessageWantsOrganizeTabs(const std::string& message) {
   std::string lower = base::ToLowerASCII(message);
-  if (lower.find("tab") == std::string::npos)
+  // "sort of …" is not a request to sort.
+  base::ReplaceSubstringsAfterOffset(&lower, 0, "sort of", "");
+  const bool verb = lower.find("organiz") != std::string::npos ||
+                    lower.find("organis") != std::string::npos ||
+                    lower.find("group") != std::string::npos ||
+                    lower.find("tidy") != std::string::npos ||
+                    lower.find("sort") != std::string::npos ||
+                    lower.find("arrange") != std::string::npos ||
+                    lower.find("categor") != std::string::npos ||
+                    lower.find("cluster") != std::string::npos ||
+                    lower.find("folder") != std::string::npos ||
+                    lower.find("clean up") != std::string::npos ||
+                    lower.find("cleanup") != std::string::npos ||
+                    lower.find("straighten") != std::string::npos;
+  if (!verb)
     return false;
-  return lower.find("organiz") != std::string::npos ||
-         lower.find("organis") != std::string::npos ||
-         (lower.find("group") != std::string::npos);
+  return lower.find("tab") != std::string::npos ||
+         lower.find("page") != std::string::npos ||
+         lower.find("site") != std::string::npos ||
+         lower.find("website") != std::string::npos ||
+         lower.find("window") != std::string::npos ||
+         lower.find("brows") != std::string::npos;
 }
 
 std::string FormatOrganizeTabsReply(const base::DictValue& result) {
   if (const std::string* err = result.FindString("error"))
     return std::string("Could not organize tabs: ") + *err;
-  std::string reply = "**Tabs organized** into native Chrome groups:\n\n";
+  std::string reply = "**Tabs organized** into folders:\n\n";
   if (const base::ListValue* groups = result.FindList("groups")) {
     for (const auto& v : *groups) {
       if (!v.is_dict())
@@ -2047,66 +2297,171 @@ std::string FormatOrganizeTabsReply(const base::DictValue& result) {
       reply += title && !title->empty() ? *title : "Group";
       reply += "** (";
       reply += base::NumberToString(count);
-      reply += " tabs)\n";
+      reply += count == 1 ? " tab)\n" : " tabs)\n";
     }
   }
   if (const std::optional<int> n = result.FindInt("tabs")) {
     reply += "\n";
     reply += base::NumberToString(*n);
-    reply += " tabs total.";
+    reply += *n == 1 ? " tab in folders." : " tabs in folders.";
   }
   return reply;
+}
+
+base::ListValue GroupsFromModelText(const std::string& text) {
+  base::ListValue groups;
+  std::string json = text;
+  const size_t fence = json.find("```");
+  if (fence != std::string::npos) {
+    size_t start = json.find('\n', fence);
+    size_t end = json.find("```", fence + 3);
+    if (start != std::string::npos && end != std::string::npos && end > start)
+      json = json.substr(start + 1, end - start - 1);
+  }
+  const size_t obj = json.find('{');
+  const size_t obj_end = json.rfind('}');
+  if (obj == std::string::npos || obj_end == std::string::npos ||
+      obj_end <= obj) {
+    return groups;
+  }
+  auto parsed = base::JSONReader::ReadDict(
+      json.substr(obj, obj_end - obj + 1), base::JSON_PARSE_RFC);
+  if (!parsed)
+    return groups;
+  const base::ListValue* list = parsed->FindList("groups");
+  if (!list)
+    list = parsed->FindList("folders");
+  if (!list)
+    return groups;
+  for (const auto& v : *list) {
+    if (groups.size() >= 12 || !v.is_dict())
+      continue;
+    groups.Append(v.Clone());
+  }
+  return groups;
 }
 
 [[maybe_unused]] void RunOrganizeTabsFastPath(
     net::HttpServer* server,
     scoped_refptr<base::SingleThreadTaskRunner> io_task_runner,
     int connection_id,
-    std::string conv_id) {
+    std::string conv_id,
+    std::string message,
+    std::string model) {
   content::GetUIThreadTaskRunner({})->PostTask(
       FROM_HERE,
       base::BindOnce(
           [](net::HttpServer* srv,
              scoped_refptr<base::SingleThreadTaskRunner> io, int cid,
-             std::string conv_id) {
-            BrowserApi::OrganizeTabs(base::BindOnce(
-                [](net::HttpServer* srv,
-                   scoped_refptr<base::SingleThreadTaskRunner> io, int cid,
-                   std::string conv_id, base::DictValue result) {
-                  std::string reply = FormatOrganizeTabsReply(result);
-                  if (!conv_id.empty() && !reply.empty())
-                    SaveChatAssistantReply(conv_id, reply, "");
-                  io->PostTask(
-                      FROM_HERE,
-                      base::BindOnce(
-                          [](net::HttpServer* srv, int cid,
-                             std::string reply) {
-                            BeginNdjsonStreamWithMeta(srv, cid, "native",
-                                                      "chat");
-                            base::DictValue text_evt;
-                            text_evt.Set("type", "text");
-                            text_evt.Set("data", reply);
-                            std::string line;
-                            base::JSONWriter::Write(text_evt, &line);
-                            line.push_back('\n');
-                            SendHttpChunk(srv, cid, std::move(line));
-                            base::DictValue done;
-                            done.Set("type", "result");
-                            done.Set("reply", reply);
-                            done.Set("text", reply);
-                            done.Set("model", "native");
-                            done.Set("model_label", "Xplor");
-                            std::string done_line;
-                            base::JSONWriter::Write(done, &done_line);
-                            done_line.push_back('\n');
-                            SendHttpChunk(srv, cid, std::move(done_line));
-                            EndNdjsonStream(srv, cid);
-                          },
-                          srv, cid, std::move(reply)));
-                },
-                srv, io, cid, conv_id));
+             std::string conv_id, std::string message, std::string model) {
+            base::ListValue tabs = BrowserApi::SnapshotOrganizableTabs();
+            std::string catalog;
+            int count = 0;
+            for (const auto& v : tabs) {
+              if (!v.is_dict())
+                continue;
+              const std::string* id = v.GetDict().FindString("id");
+              const std::string* title = v.GetDict().FindString("title");
+              const std::string* url = v.GetDict().FindString("url");
+              if (!id)
+                continue;
+              catalog += *id;
+              catalog += "\t";
+              catalog += title ? *title : "";
+              catalog += "\t";
+              catalog += url ? *url : "";
+              catalog += "\n";
+              ++count;
+            }
+            if (count == 0) {
+              EmitChatReply(srv, io, cid, conv_id,
+                            "There are no loose tabs to organize. Bookmark "
+                            "folders stay as they are.",
+                            model);
+              return;
+            }
+            base::ThreadPool::CreateSequencedTaskRunner(
+                {base::MayBlock(), base::TaskPriority::USER_VISIBLE,
+                 base::TaskShutdownBehavior::CONTINUE_ON_SHUTDOWN})
+                ->PostTask(
+                    FROM_HERE,
+                    base::BindOnce(
+                        [](net::HttpServer* srv,
+                           scoped_refptr<base::SingleThreadTaskRunner> io,
+                           int cid, std::string conv_id, std::string message,
+                           std::string model, std::string catalog) {
+                          const std::string prompt =
+                              "The user asked: " + message +
+                              "\n\nOpen tabs, one per line, as "
+                              "id<TAB>title<TAB>url:\n" +
+                              catalog +
+                              "\nChoose the folders yourself from these "
+                              "pages. Reply with ONLY a JSON object, no "
+                              "markdown:\n"
+                              "{\"groups\":[{\"title\":\"Short name\","
+                              "\"tab_ids\":[\"id\"]}]}\n"
+                              "Use only ids from the list. Put each id in "
+                              "at most one group. Name each folder for what "
+                              "those pages are about. Never name a folder "
+                              "New Tab, Misc, or Other.";
+                          base::DictValue result = RunOAuthChatBlocking(
+                              prompt, model,
+                              "Reply with only the JSON object. No "
+                              "markdown, no prose.");
+                          base::ListValue groups;
+                          std::string error;
+                          if (const std::string* text =
+                                  result.FindString("text"))
+                            groups = GroupsFromModelText(*text);
+                          if (const std::string* err =
+                                  result.FindString("error"))
+                            error = *err;
+                          content::GetUIThreadTaskRunner({})->PostTask(
+                              FROM_HERE,
+                              base::BindOnce(
+                                  [](net::HttpServer* srv,
+                                     scoped_refptr<base::SingleThreadTaskRunner>
+                                         io,
+                                     int cid, std::string conv_id,
+                                     std::string model, std::string error,
+                                     base::ListValue groups) {
+                                    if (!error.empty() || groups.empty()) {
+                                      EmitChatReply(
+                                          srv, io, cid, conv_id,
+                                          error.empty()
+                                              ? "Grok did not return folders "
+                                                "for these tabs."
+                                              : error,
+                                          model);
+                                      return;
+                                    }
+                                    BrowserApi::ApplyModelTabGroups(
+                                        std::move(groups),
+                                        base::BindOnce(
+                                            [](net::HttpServer* srv,
+                                               scoped_refptr<
+                                                   base::SingleThreadTaskRunner>
+                                                   io,
+                                               int cid, std::string conv_id,
+                                               std::string model,
+                                               base::DictValue applied) {
+                                              EmitChatReply(
+                                                  srv, io, cid, conv_id,
+                                                  FormatOrganizeTabsReply(
+                                                      applied),
+                                                  model);
+                                            },
+                                            srv, io, cid, conv_id, model));
+                                  },
+                                  srv, io, cid, std::move(conv_id),
+                                  std::move(model), std::move(error),
+                                  std::move(groups)));
+                        },
+                        srv, io, cid, std::move(conv_id), std::move(message),
+                        std::move(model), std::move(catalog)));
           },
-          server, io_task_runner, connection_id, std::move(conv_id)));
+          server, io_task_runner, connection_id, std::move(conv_id),
+          std::move(message), std::move(model)));
 }
 
 // Registry of in-flight grok runs keyed by conversation id, so a chat's agent
@@ -2927,8 +3282,12 @@ base::CommandLine BuildGrokChatCommand(const std::string& message,
   cmd.AppendArg("--output-format");
   cmd.AppendArg(streaming ? "streaming-json" : "json");
   cmd.AppendArg("--always-approve");
-  cmd.AppendArg("-m");
-  cmd.AppendArg(model);
+  // No model means the CLI's own default, which always exists on this
+  // install. A stale name here fails the whole run.
+  if (!model.empty()) {
+    cmd.AppendArg("-m");
+    cmd.AppendArg(model);
+  }
   cmd.AppendArg("--max-turns");
   cmd.AppendArg(base::NumberToString(GetConfiguredMaxTurns()));
   cmd.AppendArg("--effort");
@@ -2965,8 +3324,10 @@ constexpr char kAppBuildRules[] =
     "Prefer simple HTML/CSS/JS static apps with index.html as the entry point. "
     "Do NOT start web servers or tell the user to run npm/python servers — "
     "Xplor auto-hosts each app on its own localhost port. Use relative paths "
-    "for assets (./style.css, ./app.js). Write a short README. Be concise in "
-    "chat; put code in files.";
+    "for assets (./style.css, ./app.js). Give the app a short product name "
+    "(one or two words) and use it as the <title> of index.html and as the "
+    "first line of README.md (\"# Name\"). Write a short README. Be concise "
+    "in chat; put code in files.";
 
 void RunGrokAgentStream(
     net::HttpServer* server,
@@ -3154,6 +3515,430 @@ base::ListValue OAuthMessagesForConversation(const std::string& conv_id,
   return messages;
 }
 
+
+// ---- Claude through the Anthropic Console sign-in (ant CLI) ---------------
+// `ant auth login --no-browser` prints an authorize URL and reads the code the
+// Console shows after approval from stdin. Requests use the token from
+// `ant auth print-credentials --access-token` (which refreshes it). Usage is
+// billed at API rates to the Console organization chosen at sign-in.
+
+constexpr char kClaudeApi[] = "https://api.anthropic.com/v1/messages";
+constexpr char kAntInstallCommand[] = "brew install anthropics/tap/ant";
+constexpr char kAntInstallHelp[] =
+    "https://platform.claude.com/docs/en/cli-sdks-libraries/cli/quickstart";
+
+bool IsClaudeModel(const std::string& model) {
+  return base::StartsWith(model, "claude-");
+}
+
+base::FilePath ResolveAntBinary() {
+  std::vector<base::FilePath> candidates;
+  if (const char* env = getenv("ANT_BIN"); env && *env)
+    candidates.push_back(base::FilePath::FromUTF8Unsafe(env));
+  base::FilePath home;
+  if (base::PathService::Get(base::DIR_HOME, &home) && !home.empty()) {
+    candidates.push_back(home.AppendASCII(".local/bin/ant"));
+    candidates.push_back(home.AppendASCII("go/bin/ant"));
+  }
+#if !BUILDFLAG(IS_WIN)
+  candidates.push_back(base::FilePath("/opt/homebrew/bin/ant"));
+  candidates.push_back(base::FilePath("/usr/local/bin/ant"));
+#endif
+  for (const base::FilePath& path : candidates) {
+    if (base::PathExists(path))
+      return path;
+  }
+  return base::FilePath();
+}
+
+base::FilePath AnthropicConfigDir() {
+  if (const char* env = getenv("ANTHROPIC_CONFIG_DIR"); env && *env)
+    return base::FilePath::FromUTF8Unsafe(env);
+  base::FilePath home;
+  base::PathService::Get(base::DIR_HOME, &home);
+  return home.AppendASCII(".config").AppendASCII("anthropic");
+}
+
+// Cheap check for listing models: ant has a stored login. The token itself is
+// checked when a request is made.
+bool ClaudeSignedIn() {
+  base::FileEnumerator files(AnthropicConfigDir().AppendASCII("credentials"),
+                             /*recursive=*/false, base::FileEnumerator::FILES,
+                             FILE_PATH_LITERAL("*.json"));
+  for (base::FilePath f = files.Next(); !f.empty(); f = files.Next()) {
+    if (files.GetInfo().GetSize() > 2)
+      return true;
+  }
+  return false;
+}
+
+std::string LoadClaudeAccessToken() {
+  const base::FilePath ant = ResolveAntBinary();
+  if (ant.empty())
+    return std::string();
+  base::CommandLine cmd(ant);
+  cmd.AppendArg("auth");
+  cmd.AppendArg("print-credentials");
+  cmd.AppendArg("--access-token");
+  std::string output;
+  if (!base::GetAppOutput(cmd, &output))
+    return std::string();
+  base::TrimWhitespaceASCII(output, base::TRIM_ALL, &output);
+  if (!base::StartsWith(output, "sk-ant-") ||
+      output.find('\n') != std::string::npos)
+    return std::string();
+  return output;
+}
+
+base::ListValue ClaudeModelList() {
+  base::ListValue models;
+  const std::pair<const char*, const char*> kModels[] = {
+      {"claude-opus-5", "Claude Opus 5"},
+      {"claude-sonnet-5", "Claude Sonnet 5"},
+      {"claude-haiku-4-5", "Claude Haiku 4.5"}};
+  for (const auto& [id, label] : kModels) {
+    base::DictValue m;
+    m.Set("id", id);
+    m.Set("label", label);
+    m.Set("provider", "claude");
+    models.Append(std::move(m));
+  }
+  return models;
+}
+
+#if BUILDFLAG(IS_POSIX)
+struct ClaudeLogin {
+  base::Process process;
+  int stdin_fd = -1;
+  std::string url;
+  std::string output;
+  bool running = false;
+  bool code_sent = false;
+  bool finished = false;
+  int exit_code = 0;
+};
+
+base::Lock& ClaudeLoginLock() {
+  static base::NoDestructor<base::Lock> lock;
+  return *lock;
+}
+
+ClaudeLogin& ClaudeLoginState() {
+  static base::NoDestructor<ClaudeLogin> state;
+  return *state;
+}
+
+void PumpClaudeLoginOutput(int read_fd) {
+  char buf[1024];
+  bool opened = false;
+  while (true) {
+    const ssize_t n = HANDLE_EINTR(read(read_fd, buf, sizeof(buf)));
+    if (n <= 0)
+      break;
+    std::string url_to_open;
+    {
+      base::AutoLock lock(ClaudeLoginLock());
+      ClaudeLogin& s = ClaudeLoginState();
+      s.output.append(buf, n);
+      const size_t at =
+          s.output.find("https://platform.claude.com/oauth/authorize");
+      if (s.url.empty() && at != std::string::npos) {
+        const size_t end = s.output.find_first_of(" \r\n\t", at);
+        if (end != std::string::npos) {
+          s.url = s.output.substr(at, end - at);
+          url_to_open = s.url;
+        }
+      }
+    }
+    if (!url_to_open.empty() && !opened) {
+      opened = true;
+      OpenUrlInXplorTab(url_to_open);
+    }
+  }
+  close(read_fd);
+  base::Process process;
+  {
+    base::AutoLock lock(ClaudeLoginLock());
+    process = ClaudeLoginState().process.Duplicate();
+  }
+  int exit_code = -1;
+  if (process.IsValid())
+    process.WaitForExitWithTimeout(base::Seconds(10), &exit_code);
+  base::AutoLock lock(ClaudeLoginLock());
+  ClaudeLogin& s = ClaudeLoginState();
+  if (s.stdin_fd >= 0) {
+    close(s.stdin_fd);
+    s.stdin_fd = -1;
+  }
+  s.running = false;
+  s.finished = true;
+  s.exit_code = exit_code;
+}
+#endif  // BUILDFLAG(IS_POSIX)
+
+// Last meaningful line of the ant output, shown when sign-in fails.
+std::string ClaudeLoginErrorText(const std::string& output) {
+  std::string last;
+  for (const std::string& line : base::SplitString(
+           output, "\n", base::TRIM_WHITESPACE, base::SPLIT_WANT_NONEMPTY)) {
+    last = line;
+  }
+  if (base::StartsWith(last, "Code:"))
+    last = std::string(
+        base::TrimWhitespaceASCII(last.substr(5), base::TRIM_ALL));
+  return last.empty() ? std::string("Sign-in did not finish.") : last;
+}
+
+base::DictValue ClaudeStatusDict() {
+  base::DictValue d;
+  const bool installed = !ResolveAntBinary().empty();
+  d.Set("installed", installed);
+  d.Set("signed_in", installed && ClaudeSignedIn());
+  d.Set("install_command", kAntInstallCommand);
+  d.Set("install_help", kAntInstallHelp);
+#if BUILDFLAG(IS_POSIX)
+  base::AutoLock lock(ClaudeLoginLock());
+  const ClaudeLogin& s = ClaudeLoginState();
+  d.Set("running", s.running);
+  d.Set("url", s.url);
+  d.Set("code_sent", s.code_sent);
+  if (s.finished && s.exit_code != 0)
+    d.Set("error", ClaudeLoginErrorText(s.output));
+#else
+  d.Set("running", false);
+#endif
+  return d;
+}
+
+base::DictValue StartClaudeLogin() {
+  const base::FilePath ant = ResolveAntBinary();
+  if (ant.empty())
+    return ClaudeStatusDict();
+#if BUILDFLAG(IS_POSIX)
+  {
+    base::AutoLock lock(ClaudeLoginLock());
+    ClaudeLogin& s = ClaudeLoginState();
+    if (s.running) {
+      if (!s.url.empty())
+        OpenUrlInXplorTab(s.url);
+    } else {
+      int in_pipe[2];
+      int out_pipe[2];
+      if (pipe(in_pipe) != 0)
+        return base::DictValue();
+      if (pipe(out_pipe) != 0) {
+        close(in_pipe[0]);
+        close(in_pipe[1]);
+        return base::DictValue();
+      }
+      base::CommandLine cmd(ant);
+      cmd.AppendArg("auth");
+      cmd.AppendArg("login");
+      cmd.AppendArg("--no-browser");
+      base::LaunchOptions options;
+      options.fds_to_remap.emplace_back(in_pipe[0], STDIN_FILENO);
+      options.fds_to_remap.emplace_back(out_pipe[1], STDOUT_FILENO);
+      options.fds_to_remap.emplace_back(out_pipe[1], STDERR_FILENO);
+      base::Process process = base::LaunchProcess(cmd, options);
+      close(in_pipe[0]);
+      close(out_pipe[1]);
+      if (!process.IsValid()) {
+        close(in_pipe[1]);
+        close(out_pipe[0]);
+        base::DictValue err;
+        err.Set("error", "Could not start ant.");
+        return err;
+      }
+      s = ClaudeLogin();
+      s.process = std::move(process);
+      s.stdin_fd = in_pipe[1];
+      s.running = true;
+      base::ThreadPool::PostTask(
+          FROM_HERE,
+          {base::MayBlock(), base::TaskPriority::USER_VISIBLE,
+           base::TaskShutdownBehavior::CONTINUE_ON_SHUTDOWN},
+          base::BindOnce(&PumpClaudeLoginOutput, out_pipe[0]));
+    }
+  }
+  // Give ant a moment to print the URL so the reply can carry it.
+  for (int i = 0; i < 20; ++i) {
+    {
+      base::AutoLock lock(ClaudeLoginLock());
+      if (!ClaudeLoginState().url.empty() || !ClaudeLoginState().running)
+        break;
+    }
+    base::PlatformThread::Sleep(base::Milliseconds(100));
+  }
+#endif
+  return ClaudeStatusDict();
+}
+
+base::DictValue SubmitClaudeCode(const std::string& raw_code) {
+  std::string code = raw_code;
+  base::TrimWhitespaceASCII(code, base::TRIM_ALL, &code);
+  base::DictValue d;
+  if (code.empty() || code.size() > 4096 ||
+      code.find_first_of("\r\n") != std::string::npos) {
+    d.Set("error", "Paste the code from the Claude page.");
+    return d;
+  }
+#if BUILDFLAG(IS_POSIX)
+  {
+    base::AutoLock lock(ClaudeLoginLock());
+    ClaudeLogin& s = ClaudeLoginState();
+    if (!s.running || s.stdin_fd < 0) {
+      d.Set("error", "Start sign-in first.");
+      return d;
+    }
+    if (!base::WriteFileDescriptor(s.stdin_fd, code + "\n")) {
+      d.Set("error", "Could not send the code to ant.");
+      return d;
+    }
+    s.code_sent = true;
+  }
+  // The token exchange is one request; wait for ant to finish.
+  for (int i = 0; i < 150; ++i) {
+    {
+      base::AutoLock lock(ClaudeLoginLock());
+      if (!ClaudeLoginState().running)
+        break;
+    }
+    base::PlatformThread::Sleep(base::Milliseconds(100));
+  }
+#endif
+  return ClaudeStatusDict();
+}
+
+base::DictValue SignOutClaude() {
+  const base::FilePath ant = ResolveAntBinary();
+  if (!ant.empty()) {
+    base::CommandLine cmd(ant);
+    cmd.AppendArg("auth");
+    cmd.AppendArg("logout");
+    std::string ignored;
+    base::GetAppOutput(cmd, &ignored);
+  }
+  return ClaudeStatusDict();
+}
+
+// Builds the curl command for one chat request: Grok's sign-in proxy, or the
+// Claude API for claude-* models. |messages| is OpenAI-shaped (system first);
+// Claude gets the system text as its top-level system prompt. Returns an
+// error message, or empty on success.
+std::string BuildChatRequest(const std::string& requested_model,
+                             base::ListValue messages,
+                             int max_seconds,
+                             const std::string& tag,
+                             base::CommandLine* cmd,
+                             base::FilePath* body_path,
+                             std::string* model_out) {
+  const bool claude = IsClaudeModel(requested_model);
+  const std::string token =
+      claude ? LoadClaudeAccessToken() : LoadGrokOAuthAccessToken();
+  if (token.empty()) {
+    if (!claude)
+      return "Sign in to Grok to chat. Click Sign in.";
+    return ResolveAntBinary().empty()
+               ? std::string("Claude needs Anthropic's ant CLI. Install it "
+                             "with `") +
+                     kAntInstallCommand + "`, then sign in under Settings."
+               : std::string(
+                     "Sign in to Claude under Settings to use Claude models.");
+  }
+  std::string model = requested_model;
+  if (!claude) {
+    model = MapModelId(model);
+    if (model.empty())
+      model = "grok-4.6";
+  }
+  base::DictValue body;
+  body.Set("model", model);
+  body.Set("stream", true);
+  if (claude) {
+    std::string system;
+    base::ListValue turns;
+    for (base::Value& v : messages) {
+      if (!v.is_dict())
+        continue;
+      const std::string* role = v.GetDict().FindString("role");
+      const std::string* content = v.GetDict().FindString("content");
+      if (!role || !content || content->empty())
+        continue;
+      if (*role == "system") {
+        system += (system.empty() ? "" : "\n\n") + *content;
+        continue;
+      }
+      if (*role != "user" && *role != "assistant")
+        continue;
+      if (turns.empty() && *role != "user")
+        continue;  // The conversation must open with the user.
+      base::DictValue turn;
+      turn.Set("role", *role);
+      turn.Set("content", *content);
+      turns.Append(std::move(turn));
+    }
+    body.Set("max_tokens", 16000);
+    if (!system.empty())
+      body.Set("system", system);
+    body.Set("messages", std::move(turns));
+  } else {
+    body.Set("messages", std::move(messages));
+  }
+  std::string json;
+  base::JSONWriter::Write(body, &json);
+  base::FilePath temp_dir;
+  if (!base::GetTempDir(&temp_dir))
+    return "Could not write the chat request.";
+  *body_path = temp_dir.AppendASCII("xplorer-chat-" + tag + ".json");
+  if (!base::WriteFile(*body_path, json))
+    return "Could not write the chat request.";
+
+  *cmd = base::CommandLine(CurlProgram());
+  cmd->AppendArg("-sS");
+  cmd->AppendArg("-N");
+  cmd->AppendArg("--max-time");
+  cmd->AppendArg(base::NumberToString(max_seconds));
+  cmd->AppendArg("-X");
+  cmd->AppendArg("POST");
+  if (claude) {
+    cmd->AppendArg(kClaudeApi);
+    cmd->AppendArg("-H");
+    cmd->AppendArg("Authorization: Bearer " + token);
+    cmd->AppendArg("-H");
+    cmd->AppendArg("anthropic-beta: oauth-2025-04-20");
+    cmd->AppendArg("-H");
+    cmd->AppendArg("anthropic-version: 2023-06-01");
+  } else {
+    cmd->AppendArg(kGrokChatProxy);
+    cmd->AppendArg("-H");
+    cmd->AppendArg("Authorization: Bearer " + token);
+    cmd->AppendArg("-H");
+    cmd->AppendArg("X-XAI-Token-Auth: xai-grok-cli");
+    cmd->AppendArg("-H");
+    cmd->AppendArg("x-grok-model-override: " + model);
+    cmd->AppendArg("-H");
+    cmd->AppendArg("x-grok-client-version: 1.0.36");
+    cmd->AppendArg("-H");
+    cmd->AppendArg("User-Agent: grok-cli/1.0.36");
+  }
+  cmd->AppendArg("-H");
+  cmd->AppendArg("Content-Type: application/json");
+  cmd->AppendArg("--data-binary");
+  cmd->AppendArg("@" + body_path->AsUTF8Unsafe());
+  *model_out = model;
+  return std::string();
+}
+
+// Grok models, plus Claude models once ant has a stored Console login.
+base::ListValue ListChatModels() {
+  base::ListValue models = ListGrokModels();
+  if (ClaudeSignedIn()) {
+    for (base::Value& m : ClaudeModelList())
+      models.Append(std::move(m));
+  }
+  return models;
+}
+
 std::string ChatErrorText(const base::DictValue& parsed) {
   if (const std::string* message = parsed.FindString("error"))
     return *message;
@@ -3165,6 +3950,14 @@ std::string ChatErrorText(const base::DictValue& parsed) {
 }
 
 std::string DeltaTextFromChatChunk(const base::DictValue& chunk) {
+  // Claude Messages stream: content_block_delta carrying a text_delta.
+  if (const std::string* type = chunk.FindString("type");
+      type && *type == "content_block_delta") {
+    const base::DictValue* delta = chunk.FindDict("delta");
+    const std::string* dtype = delta ? delta->FindString("type") : nullptr;
+    const std::string* text = delta ? delta->FindString("text") : nullptr;
+    return dtype && *dtype == "text_delta" && text ? *text : std::string();
+  }
   const base::ListValue* choices = chunk.FindList("choices");
   if (!choices || choices->empty() || !(*choices)[0].is_dict())
     return {};
@@ -3190,63 +3983,21 @@ void PumpGrokOAuthChat(
     std::string message,
     std::string model,
     std::string rules) {
-  const std::string token = LoadGrokOAuthAccessToken();
-  if (token.empty()) {
-    io_task_runner->PostTask(
-        FROM_HERE,
-        base::BindOnce(&SendStreamError, server, connection_id,
-                       "Sign in to Grok to chat. Click Sign in."));
-    return;
+  base::CommandLine cmd(base::CommandLine::NO_PROGRAM);
+  base::FilePath body_path;
+  {
+    std::string used_model;
+    const std::string request_error = BuildChatRequest(
+        model, OAuthMessagesForConversation(conv_id, rules, message),
+        /*max_seconds=*/180, conv_id, &cmd, &body_path, &used_model);
+    if (!request_error.empty()) {
+      io_task_runner->PostTask(
+          FROM_HERE, base::BindOnce(&SendStreamError, server, connection_id,
+                                    request_error));
+      return;
+    }
+    model = used_model;
   }
-  model = MapModelId(model);
-  if (model.empty())
-    model = "grok-4.6";
-
-  base::DictValue body;
-  body.Set("model", model);
-  body.Set("stream", true);
-  body.Set("messages",
-           OAuthMessagesForConversation(conv_id, rules, message));
-  std::string json;
-  base::JSONWriter::Write(body, &json);
-  base::FilePath temp_dir;
-  if (!base::GetTempDir(&temp_dir)) {
-    io_task_runner->PostTask(
-        FROM_HERE, base::BindOnce(&SendStreamError, server, connection_id,
-                                  "Could not write the Grok request."));
-    return;
-  }
-  base::FilePath body_path =
-      temp_dir.AppendASCII("xplorer-grok-" + conv_id + ".json");
-  if (!base::WriteFile(body_path, json)) {
-    io_task_runner->PostTask(
-        FROM_HERE, base::BindOnce(&SendStreamError, server, connection_id,
-                                  "Could not write the Grok request."));
-    return;
-  }
-
-  base::CommandLine cmd(CurlProgram());
-  cmd.AppendArg("-sS");
-  cmd.AppendArg("-N");
-  cmd.AppendArg("--max-time");
-  cmd.AppendArg("180");
-  cmd.AppendArg("-X");
-  cmd.AppendArg("POST");
-  cmd.AppendArg(kGrokChatProxy);
-  cmd.AppendArg("-H");
-  cmd.AppendArg("Authorization: Bearer " + token);
-  cmd.AppendArg("-H");
-  cmd.AppendArg("X-XAI-Token-Auth: xai-grok-cli");
-  cmd.AppendArg("-H");
-  cmd.AppendArg("x-grok-model-override: " + model);
-  cmd.AppendArg("-H");
-  cmd.AppendArg("x-grok-client-version: 1.0.36");
-  cmd.AppendArg("-H");
-  cmd.AppendArg("User-Agent: grok-cli/1.0.36");
-  cmd.AppendArg("-H");
-  cmd.AppendArg("Content-Type: application/json");
-  cmd.AppendArg("--data-binary");
-  cmd.AppendArg("@" + body_path.AsUTF8Unsafe());
 
   std::optional<GrokStdoutProcess> io = LaunchGrokStdoutProcess(cmd);
   if (!io.has_value()) {
@@ -3399,15 +4150,7 @@ void PumpGrokOAuthChat(
 base::DictValue RunOAuthChatBlocking(const std::string& message,
                                      const std::string& model,
                                      const std::string& rules) {
-  const std::string token = LoadGrokOAuthAccessToken();
   base::DictValue out;
-  if (token.empty()) {
-    out.Set("error", "Sign in to Grok to chat. Click Sign in.");
-    return out;
-  }
-  std::string use_model = MapModelId(model);
-  if (use_model.empty())
-    use_model = "grok-4.6";
   base::ListValue messages;
   base::DictValue system;
   system.Set("role", "system");
@@ -3417,44 +4160,16 @@ base::DictValue RunOAuthChatBlocking(const std::string& message,
   user.Set("role", "user");
   user.Set("content", message);
   messages.Append(std::move(user));
-  base::DictValue body;
-  body.Set("model", use_model);
-  body.Set("stream", true);
-  body.Set("messages", std::move(messages));
-  std::string json;
-  base::JSONWriter::Write(body, &json);
-  base::FilePath temp_dir;
-  if (!base::GetTempDir(&temp_dir)) {
-    out.Set("error", "Could not write the Grok request.");
+  base::CommandLine cmd(base::CommandLine::NO_PROGRAM);
+  base::FilePath body_path;
+  std::string use_model;
+  const std::string request_error =
+      BuildChatRequest(model, std::move(messages), /*max_seconds=*/60, "once",
+                       &cmd, &body_path, &use_model);
+  if (!request_error.empty()) {
+    out.Set("error", request_error);
     return out;
   }
-  base::FilePath body_path = temp_dir.AppendASCII("xplorer-grok-once.json");
-  if (!base::WriteFile(body_path, json)) {
-    out.Set("error", "Could not write the Grok request.");
-    return out;
-  }
-  base::CommandLine cmd(CurlProgram());
-  cmd.AppendArg("-sS");
-  cmd.AppendArg("-N");
-  cmd.AppendArg("--max-time");
-  cmd.AppendArg("60");
-  cmd.AppendArg("-X");
-  cmd.AppendArg("POST");
-  cmd.AppendArg(kGrokChatProxy);
-  cmd.AppendArg("-H");
-  cmd.AppendArg("Authorization: Bearer " + token);
-  cmd.AppendArg("-H");
-  cmd.AppendArg("X-XAI-Token-Auth: xai-grok-cli");
-  cmd.AppendArg("-H");
-  cmd.AppendArg("x-grok-model-override: " + use_model);
-  cmd.AppendArg("-H");
-  cmd.AppendArg("x-grok-client-version: 1.0.36");
-  cmd.AppendArg("-H");
-  cmd.AppendArg("User-Agent: grok-cli/1.0.36");
-  cmd.AppendArg("-H");
-  cmd.AppendArg("Content-Type: application/json");
-  cmd.AppendArg("--data-binary");
-  cmd.AppendArg("@" + body_path.AsUTF8Unsafe());
   std::optional<GrokStdoutProcess> io = LaunchGrokStdoutProcess(cmd);
   if (!io.has_value()) {
     base::DeleteFile(body_path);
@@ -3522,7 +4237,8 @@ void RunGrokChatStream(
     std::string conv_id,
     std::string message,
     std::string session_id,
-    std::string model) {
+    std::string model,
+    std::string page_context = std::string()) {
   // Sidebar chat uses the OAuth token directly. session_id is the old CLI
   // harness resume handle and is intentionally ignored.
   (void)session_id;
@@ -3531,7 +4247,10 @@ void RunGrokChatStream(
   // before this function is called.
   std::string rules =
       std::string(kChatRules) +
-      "\n\nIDENTITY: You are Grok, the AI assistant built into Xplor — an "
+      "\n\nIDENTITY: You are " +
+      std::string(IsClaudeModel(model) ? "Claude, made by Anthropic, "
+                                       : "Grok, ") +
+      "the AI assistant built into Xplor — an "
       "AI-native web browser (NOT Cursor or any code editor). You are running as "
       "the \"" +
       ModelDisplayName(model) + "\" model (" + model +
@@ -3539,6 +4258,14 @@ void RunGrokChatStream(
       ModelDisplayName(model) +
       "\" directly and concisely — do not read files or session metadata to find "
       "out, and never describe yourself as being inside Cursor or an IDE.";
+  // History is rebuilt from the stored conversation, so page text for "this
+  // page" questions rides in the system prompt, not the user message.
+  if (!page_context.empty()) {
+    rules += "\n\nCURRENT PAGE: the user is looking at this page in Xplor. "
+             "When they say \"this page\", \"this article\" or ask for a "
+             "summary, answer from it.\n" +
+             page_context;
+  }
   base::ThreadPool::CreateSequencedTaskRunner(
       {base::MayBlock(), base::TaskPriority::USER_VISIBLE,
        base::TaskShutdownBehavior::CONTINUE_ON_SHUTDOWN})
@@ -3547,6 +4274,65 @@ void RunGrokChatStream(
                                 connection_id, std::move(conv_id),
                                 std::move(message), std::move(model),
                                 std::move(rules)));
+}
+
+// "Summarize this page", "what does this article say"... The OAuth chat has
+// no tool channel, so the model cannot look at the tab itself.
+bool MessageWantsPageContext(const std::string& message) {
+  const std::string lower = base::ToLowerASCII(message);
+  for (const char* cue :
+       {"this page", "this article", "this tab", "this site", "this website",
+        "this post", "this doc", "current page", "current tab", "the page",
+        "summarize", "summarise", "tl;dr", "tldr"}) {
+    if (lower.find(cue) != std::string::npos)
+      return true;
+  }
+  return false;
+}
+
+// Read the active tab on the UI thread, then answer on the IO thread with the
+// page attached ahead of the question. The stored user message stays as typed.
+void RunPageContextChat(
+    net::HttpServer* server,
+    scoped_refptr<base::SingleThreadTaskRunner> io_task_runner,
+    int connection_id,
+    std::string conv_id,
+    std::string message,
+    std::string session_id,
+    std::string model) {
+  content::GetUIThreadTaskRunner({})->PostTask(
+      FROM_HERE,
+      base::BindOnce(
+          [](net::HttpServer* srv,
+             scoped_refptr<base::SingleThreadTaskRunner> io, int cid,
+             std::string conv_id, std::string message, std::string sid,
+             std::string model) {
+            BrowserApi::ReadActiveTab(base::BindOnce(
+                [](net::HttpServer* srv,
+                   scoped_refptr<base::SingleThreadTaskRunner> io, int cid,
+                   std::string conv_id, std::string message, std::string sid,
+                   std::string model, base::DictValue page) {
+                  std::string context;
+                  const std::string* text = page.FindString("text");
+                  if (text && !text->empty()) {
+                    const std::string* title = page.FindString("title");
+                    const std::string* url = page.FindString("url");
+                    context = "Title: " + (title ? *title : std::string()) +
+                              "\nURL: " + (url ? *url : std::string()) +
+                              "\n<page>\n" + *text + "\n</page>";
+                  }
+                  io->PostTask(
+                      FROM_HERE,
+                      base::BindOnce(&RunGrokChatStream, srv, io, cid,
+                                     std::move(conv_id), std::move(message),
+                                     std::move(sid), std::move(model),
+                                     std::move(context)));
+                },
+                srv, io, cid, std::move(conv_id), std::move(message),
+                std::move(sid), std::move(model)));
+          },
+          server, io_task_runner, connection_id, std::move(conv_id),
+          std::move(message), std::move(session_id), std::move(model)));
 }
 
 base::DictValue RunGrokSearch(const std::string& query,
@@ -4029,7 +4815,9 @@ std::string ResolveConfiguredModel(const std::string* model_override) {
 std::string ResolveAppBuildModel(const std::string* model_override) {
   if (model_override && !model_override->empty())
     return *model_override;
-  return kSearchModel;
+  // Let the grok CLI pick its default. "grok-build" is not in its model list
+  // any more, and chat model names (sign-in proxy) don't exist in the CLI.
+  return std::string();
 }
 
 bool IsConversationRunActive(const std::string& conv_id) {
@@ -4219,7 +5007,7 @@ bool GrokNative::TryHandleRequest(
     d.Set("grok", ResolveGrokBinary().AsUTF8Unsafe());
     d.Set("model", model);
     d.Set("model_label", ModelDisplayName(model));
-    d.Set("models", ListGrokModels());
+    d.Set("models", ListChatModels());
     SendJson(server, connection_id, net::HTTP_OK, std::move(d));
     return true;
   }
@@ -4253,6 +5041,27 @@ bool GrokNative::TryHandleRequest(
   // In-browser OAuth login (mirrors AskHere / Xnative "Continue with OAuth"):
   // POST starts `grok login --oauth` and opens the auth.x.ai URL in an Xplor
   // tab; GET polls progress until the CLI finishes the loopback callback.
+  // Claude through Anthropic's ant CLI (Console sign-in, API-rate billing).
+  if (info.method == "GET" && path == "/api/claude/status") {
+    SendJson(server, connection_id, net::HTTP_OK, ClaudeStatusDict());
+    return true;
+  }
+  if (info.method == "POST" && path == "/api/claude/login") {
+    SendJson(server, connection_id, net::HTTP_OK, StartClaudeLogin());
+    return true;
+  }
+  if (info.method == "POST" && path == "/api/claude/code") {
+    auto body = base::JSONReader::ReadDict(info.data, base::JSON_PARSE_RFC);
+    const std::string* code = body ? body->FindString("code") : nullptr;
+    SendJson(server, connection_id, net::HTTP_OK,
+             SubmitClaudeCode(code ? *code : std::string()));
+    return true;
+  }
+  if (info.method == "POST" && path == "/api/claude/logout") {
+    SendJson(server, connection_id, net::HTTP_OK, SignOutClaude());
+    return true;
+  }
+
   if (info.method == "POST" && path == "/api/grok/login") {
     bool open_tab = true;
     if (auto body = base::JSONReader::ReadDict(info.data, base::JSON_PARSE_RFC)) {
@@ -4575,7 +5384,7 @@ bool GrokNative::TryHandleRequest(
 
   if (info.method == "GET" && path == "/api/models") {
     base::DictValue d;
-    d.Set("models", ListGrokModels());
+    d.Set("models", ListChatModels());
     d.Set("model", GetConfiguredModel());
     SendJson(server, connection_id, net::HTTP_OK, std::move(d));
     return true;
@@ -4586,7 +5395,7 @@ bool GrokNative::TryHandleRequest(
     if (!d.FindString("model"))
       d.Set("model", kDefaultModel);
     d.Set("model_label", ModelDisplayName(GetConfiguredModel()));
-    d.Set("models", ListGrokModels());
+    d.Set("models", ListChatModels());
     d.Set("search_home", GetSearchHomeMode());
     d.Set("grok_web_url", "https://grok.com/");
     d.Set("grok_build_url",
@@ -4628,7 +5437,7 @@ bool GrokNative::TryHandleRequest(
     // the global default chat/search models, so an unvalidated value (e.g. a
     // bogus or huge string) would corrupt live config for every new session.
     if ((model && !model->empty()) || (search_model && !search_model->empty())) {
-      base::ListValue known = ListGrokModels();
+      base::ListValue known = ListChatModels();
       auto is_known = [&known](const std::string& id) {
         for (const base::Value& m : known) {
           const auto* md = m.GetIfDict();
@@ -4819,6 +5628,50 @@ bool GrokNative::TryHandleRequest(
 
   // POST /api/sidepanel/open -> ensure the native Grok side panel is OPEN on the
   // active window (idempotent; never closes). Triggered by the /apps create flow.
+  // Open one of Xplor's own pages (an app preview) in a foreground tab. The
+  // side panel can't: window.open after an await is treated as a popup.
+  // Only this gateway's origin is allowed.
+  // Chrome's own settings. Web pages can't link to chrome:// directly.
+  if (info.method == "POST" && path == "/api/open-chrome-settings") {
+    OpenUrlInXplorTab("chrome://settings/");
+    base::DictValue ok;
+    ok.Set("ok", true);
+    SendJson(server, connection_id, net::HTTP_OK, std::move(ok));
+    return true;
+  }
+
+  if (info.method == "POST" && path == "/api/tabs/open-local") {
+    auto body = base::JSONReader::ReadDict(info.data, base::JSON_PARSE_RFC);
+    const std::string* rel = body ? body->FindString("path") : nullptr;
+    if (!rel || rel->empty() || (*rel)[0] != '/' ||
+        base::StartsWith(*rel, "//")) {
+      base::DictValue err;
+      err.Set("error", "path must start with /");
+      SendJson(server, connection_id, net::HTTP_BAD_REQUEST, std::move(err));
+      return true;
+    }
+    const GURL url("http://127.0.0.1:" + base::NumberToString(gateway_port) +
+                   *rel);
+    content::GetUIThreadTaskRunner({})->PostTask(
+        FROM_HERE, base::BindOnce(
+                       [](GURL url) {
+                         Profile* profile =
+                             ProfileManager::GetLastUsedProfile();
+                         if (!profile || !url.is_valid())
+                           return;
+                         NavigateParams params(profile, url,
+                                               ui::PAGE_TRANSITION_LINK);
+                         params.disposition =
+                             WindowOpenDisposition::NEW_FOREGROUND_TAB;
+                         Navigate(&params);
+                       },
+                       url));
+    base::DictValue ok;
+    ok.Set("ok", true);
+    SendJson(server, connection_id, net::HTTP_OK, std::move(ok));
+    return true;
+  }
+
   if (info.method == "POST" &&
       (path == "/api/sidepanel/open" || path == "/sidepanel/open")) {
     content::GetUIThreadTaskRunner({})->PostTask(
@@ -5535,12 +6388,21 @@ bool GrokNative::TryHandleRequest(
       session_id = *sid;
     SaveSessions(data);
     if (chat_stream) {
-      // Organize-tabs used to be handed to a tool-calling agent. This chat
-      // path has no tools, so that request looped ("I'll list MCP tools").
-      // Group the open tabs natively instead.
+      // The model names the folders. This chat has no tool channel, so
+      // the reply is JSON and Xplor applies it to the tab strip.
       if (MessageWantsOrganizeTabs(*message)) {
         RunOrganizeTabsFastPath(server, io_task_runner, connection_id,
-                                conv_id);
+                                conv_id, *message, model);
+        return true;
+      }
+      if (MessageWantsOpenTabs(*message)) {
+        RunOpenTabsFastPath(server, io_task_runner, connection_id, conv_id,
+                            *message, model);
+        return true;
+      }
+      if (MessageWantsPageContext(*message)) {
+        RunPageContextChat(server, io_task_runner, connection_id, conv_id,
+                           *message, session_id, model);
         return true;
       }
       RunGrokChatStream(server, io_task_runner, connection_id, conv_id,

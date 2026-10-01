@@ -2,6 +2,8 @@
 // Use of this source code is governed by a BSD-style license.
 
 #include "chrome/browser/agent_gateway/app_store.h"
+
+#include <cstring>
 #include "chrome/browser/agent_gateway/xplorer_paths.h"
 
 #include <map>
@@ -715,12 +717,75 @@ base::FilePath ResolveAppPath(const base::DictValue& app) {
   return base::FilePath::FromUTF8Unsafe(*path);
 }
 
+// Placeholder until the agent names the app: "build me a pomodoro timer
+// app" -> "Pomodoro timer".
 std::string DefaultAppName(const std::string& prompt) {
-  if (prompt.empty())
-    return "New App";
-  std::string name = prompt.substr(0, std::min<size_t>(40, prompt.size()));
+  std::string name = base::ToLowerASCII(prompt);
   base::TrimWhitespaceASCII(name, base::TRIM_ALL, &name);
-  return name.empty() ? "New App" : name;
+  for (const char* lead :
+       {"please ", "can you ", "could you ", "build me ", "create me ",
+        "make me ", "build ", "create ", "make ", "generate ", "write ",
+        "code ", "an ", "a ", "the ", "simple ", "small ", "new "}) {
+    if (base::StartsWith(name, lead))
+      name = name.substr(strlen(lead));
+  }
+  // Keep only the subject before any "with ...", "that ...", "for ..." detail.
+  for (const char* cut : {" with ", " that ", " which ", " using ", ","}) {
+    const size_t at = name.find(cut);
+    if (at != std::string::npos && at > 2)
+      name = name.substr(0, at);
+  }
+  for (const char* tail : {" web app", " webapp", " app", " website",
+                           " application"}) {
+    if (base::EndsWith(name, tail))
+      name = name.substr(0, name.size() - strlen(tail));
+  }
+  if (name.size() > 32)
+    name = name.substr(0, 32);
+  base::TrimWhitespaceASCII(name, base::TRIM_ALL, &name);
+  if (name.empty())
+    return "New app";
+  name[0] = base::ToUpperASCII(name[0]);
+  return name;
+}
+
+// The name the agent gave the app: <title> in index.html, else the first
+// "# Heading" in README.md. Empty when neither is usable.
+std::string AgentAppName(const base::FilePath& dir) {
+  std::string html;
+  if (base::ReadFileToString(dir.AppendASCII("index.html"), &html)) {
+    const std::string lower = base::ToLowerASCII(html);
+    const size_t open = lower.find("<title>");
+    const size_t close = lower.find("</title>");
+    if (open != std::string::npos && close != std::string::npos &&
+        close > open + 7) {
+      std::string title = html.substr(open + 7, close - open - 7);
+      // "Grove - Pomodoro timer" -> "Grove".
+      for (const char* sep :
+           {" | ", " - ", " \xE2\x80\x94 ", " \xE2\x80\x93 ", " \xC2\xB7 ", ": "}) {
+        const size_t at = title.find(sep);
+        if (at != std::string::npos && at > 0)
+          title = title.substr(0, at);
+      }
+      base::TrimWhitespaceASCII(title, base::TRIM_ALL, &title);
+      if (!title.empty() && title.size() <= 48)
+        return title;
+    }
+  }
+  std::string readme;
+  if (base::ReadFileToString(dir.AppendASCII("README.md"), &readme)) {
+    for (const std::string& line : base::SplitString(
+             readme, "\n", base::TRIM_WHITESPACE, base::SPLIT_WANT_NONEMPTY)) {
+      if (base::StartsWith(line, "# ")) {
+        std::string h = line.substr(2);
+        base::TrimWhitespaceASCII(h, base::TRIM_ALL, &h);
+        if (!h.empty() && h.size() <= 48)
+          return h;
+        break;
+      }
+    }
+  }
+  return std::string();
 }
 
 }  // namespace
@@ -789,6 +854,27 @@ bool TryHandleAppRunRequest(
   return ServeAppStaticFile(server, connection_id, app_path, rel);
 }
 
+// Keep the app's chat titled after the app.
+static void RenameAppConversation(const std::string& conv_id,
+                                  const std::string& name) {
+  if (conv_id.empty())
+    return;
+  base::DictValue data = LoadCompanionSessions();
+  base::ListValue* convs = data.FindList("conversations");
+  if (!convs)
+    return;
+  for (auto& v : *convs) {
+    if (!v.is_dict())
+      continue;
+    const std::string* cid = v.GetDict().FindString("id");
+    if (cid && *cid == conv_id) {
+      v.GetDict().Set("title", name);
+      SaveCompanionSessions(data);
+      return;
+    }
+  }
+}
+
 void OnAppBuildStreamFinished(const std::string& app_id,
                               const std::string& conv_id,
                               int exit_code,
@@ -807,6 +893,14 @@ void OnAppBuildStreamFinished(const std::string& app_id,
     SetAppField(*app, "status", kStatusReady);
     app->Set("last_error", "");
     app->Set("last_error_detail", "");
+    if (app->FindBool("name_auto").value_or(false)) {
+      const std::string named = AgentAppName(ResolveAppPath(*app));
+      if (!named.empty()) {
+        app->Set("name", named);
+        app->Set("name_auto", false);
+        RenameAppConversation(conv_id, named);
+      }
+    }
   } else {
     SetAppField(*app, "status", kStatusError);
     app->Set("last_error",
@@ -1079,6 +1173,9 @@ bool TryHandleAppsRequest(
     app.Set("name", name);
     app.Set("path", app_dir.AsUTF8Unsafe());
     app.Set("conversation_id", conv_id);
+    // The agent names the app when the first build finishes, unless the user
+    // already typed a name.
+    app.Set("name_auto", !(name_body && !name_body->empty()));
     app.Set("session_id", "");
     app.Set("status", kStatusIdle);
     app.Set("imported", false);
@@ -1292,8 +1389,11 @@ bool TryHandleAppsRequest(
       return true;
     }
     app->Set("name", *name);
+    app->Set("name_auto", false);  // A name the user typed always wins.
     app->Set("updated_at", NowIso());
     SaveRegistry(registry);
+    if (const std::string* conv = app->FindString("conversation_id"))
+      RenameAppConversation(*conv, *name);
     base::DictValue result;
     result.Set("ok", true);
     result.Set("app", AppToJson(*app, gateway_port));

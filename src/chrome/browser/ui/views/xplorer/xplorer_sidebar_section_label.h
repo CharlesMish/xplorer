@@ -7,9 +7,17 @@
 #include <string>
 
 #include "ui/base/metadata/metadata_header_macros.h"
+#include "ui/gfx/geometry/rect.h"
 #include "ui/views/controls/label.h"
 
 namespace xplorer {
+
+// `screen_bounds` is the sidebar, in screen coordinates. Sampling has to land
+// on that frost. A fixed screen point often hits a dark desktop and forces
+// white type onto the light glass.
+void NoteSidebarSampleBounds(const gfx::Rect& screen_bounds);
+bool SidebarBackdropIsDark();
+SkColor SidebarInkColor();
 
 // Small section header ("Bookmarks", "Tabs") for the Arc-style sidebar.
 class XplorerSidebarSectionLabel : public views::Label {

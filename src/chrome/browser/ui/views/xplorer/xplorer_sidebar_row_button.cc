@@ -3,6 +3,8 @@
 
 #include "chrome/browser/ui/views/xplorer/xplorer_sidebar_row_button.h"
 
+#include "chrome/browser/ui/views/xplorer/xplorer_sidebar_section_label.h"
+
 #include <utility>
 
 #include "chrome/browser/ui/color/chrome_color_id.h"
@@ -78,7 +80,7 @@ void XplorerSidebarRowButton::OnThemeChanged() {
   // MdTextButton::OnThemeChanged paints kColorButtonBackground even for
   // kText style; override after so sidebar rows stay transparent.
   MdTextButton::OnThemeChanged();
-  SetEnabledTextColors(kColorTabForegroundInactiveFrameInactive);
+  SetEnabledTextColors(SidebarInkColor());
   ConfigureInkDropForRefresh2023(this, kColorToolbarInkDropHover,
                                  kColorToolbarInkDropRipple);
   SetBackground(nullptr);

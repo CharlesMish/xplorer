@@ -33,11 +33,20 @@ class BrowserApi {
   static void GroupTabs(const std::vector<std::string>& tab_ids,
                         const std::string& title,
                         DictCallback callback);
-  // Heuristic tab grouping (Grok, Xplorer, News, …) — one native call.
+  // Tabs the user can regroup. Skips bookmark, agent, and scheduled tabs.
+  // UI thread only.
+  static base::ListValue SnapshotOrganizableTabs();
+  // Folder titles and membership chosen by the model. |groups| is
+  // [{"title","tab_ids":["session:index", ...]}]. UI thread only.
+  static void ApplyModelTabGroups(base::ListValue groups, DictCallback callback);
+  // Fixed site rules. The chat path does not use this; it asks the model.
   static void OrganizeTabs(DictCallback callback);
   static void SplitTab(const std::string& tab_id,
                        const std::string& layout,
                        DictCallback callback);
+  // Title, URL and readable text of the focused window's active tab, for
+  // chat questions about "this page". UI thread only.
+  static void ReadActiveTab(DictCallback callback);
   static void GetTheme(DictCallback callback);
   static void SetTheme(const std::string& color_scheme,
                        DictCallback callback);

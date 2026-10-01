@@ -397,10 +397,96 @@ std::vector<base::DictValue> GetPinnedAppConfigs() {
   return apps;
 }
 
+void SetPinnedAppConfigs(const std::vector<base::DictValue>& apps) {
+  base::DictValue settings = LoadGrokSettings();
+  base::ListValue list;
+  int n = 0;
+  for (const base::DictValue& app : apps) {
+    if (n >= 12) {
+      break;
+    }
+    const std::string* url_text = app.FindString("url");
+    if (!url_text) {
+      continue;
+    }
+    const GURL url(*url_text);
+    if (!url.is_valid() || !url.SchemeIsHTTPOrHTTPS()) {
+      continue;
+    }
+    const std::string* id = app.FindString("id");
+    const std::string* label = app.FindString("label");
+    base::DictValue out;
+    out.Set("id", (id && !id->empty()) ? *id : base::NumberToString(n + 1));
+    out.Set("label", label ? *label : std::string());
+    out.Set("url", url.spec());
+    list.Append(std::move(out));
+    ++n;
+  }
+  settings.Set("pinned_apps", std::move(list));
+  SaveGrokSettings(settings);
+  NotifyOnboardingChanged();
+}
+
+bool IsFavoriteUrl(const GURL& url) {
+  if (!url.is_valid() || !url.SchemeIsHTTPOrHTTPS())
+    return false;
+  for (const base::DictValue& app : GetPinnedAppConfigs()) {
+    const std::string* existing = app.FindString("url");
+    if (existing && GURL(*existing).host() == url.host())
+      return true;
+  }
+  return false;
+}
+
+void ToggleFavorite(const GURL& url, const std::u16string& title) {
+  if (!url.is_valid() || !url.SchemeIsHTTPOrHTTPS())
+    return;
+  std::vector<base::DictValue> apps = GetPinnedAppConfigs();
+  std::vector<base::DictValue> kept;
+  bool removed = false;
+  for (base::DictValue& app : apps) {
+    const std::string* existing = app.FindString("url");
+    if (existing && GURL(*existing).host() == url.host()) {
+      removed = true;
+      continue;
+    }
+    kept.push_back(std::move(app));
+  }
+  if (!removed) {
+    base::DictValue added;
+    added.Set("id", base::NumberToString(static_cast<int>(kept.size()) + 1));
+    added.Set("label", title.empty() ? url.host()
+                                     : base::UTF16ToUTF8(title));
+    added.Set("url", url.spec());
+    kept.push_back(std::move(added));
+  }
+  SetPinnedAppConfigs(kept);
+}
+
 std::string GetThemeColor() {
   base::DictValue settings = LoadGrokSettings();
   const std::string* color = settings.FindString("theme_color");
   return color ? *color : std::string();
+}
+
+std::string GetSpaceName() {
+  base::DictValue settings = LoadGrokSettings();
+  const std::string* name = settings.FindString("space_name");
+  return name && !name->empty() ? *name : std::string("Xplor");
+}
+
+void SetThemeColor(const std::string& hex) {
+  base::DictValue settings = LoadGrokSettings();
+  settings.Set("theme_color", hex);
+  SaveGrokSettings(settings);
+  NotifyOnboardingChanged();
+}
+
+void SetSpaceName(const std::string& name) {
+  base::DictValue settings = LoadGrokSettings();
+  settings.Set("space_name", name);
+  SaveGrokSettings(settings);
+  NotifyOnboardingChanged();
 }
 
 base::CallbackListSubscription AddOnboardingChangedCallback(
@@ -503,6 +589,8 @@ void RegisterGrokSidePanel(BrowserWindowInterface* browser) {
           },
           browser, profile, companion_url),
       base::BindRepeating([]() { return kGrokSidePanelWidth; }));
+  // The Chrome "AI Mode" header is a second colored bar above the chat.
+  entry->set_should_show_header(false);
   registry->Register(std::move(entry));
 }
 

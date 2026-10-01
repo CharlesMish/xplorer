@@ -115,7 +115,17 @@ void NotifyBookmarkConfigChanged();
 // {id,label,url} and render as tiles at the top of the sidebar. Theme color
 // is "#RRGGBB" and paints the space swatch. Empty string means the default.
 std::vector<base::DictValue> GetPinnedAppConfigs();
+// Replaces the "pinned_apps" list ({id,label,url}), saves, and reloads the
+// sidebar. At most 12 http(s) entries are kept.
+void SetPinnedAppConfigs(const std::vector<base::DictValue>& apps);
+// Favorites (the pinned apps row) match by host.
+bool IsFavoriteUrl(const GURL& url);
+// Adds |url| as a favorite named |title|, or removes it if it is one.
+void ToggleFavorite(const GURL& url, const std::u16string& title);
 std::string GetThemeColor();
+std::string GetSpaceName();
+void SetThemeColor(const std::string& hex);
+void SetSpaceName(const std::string& name);
 base::CallbackListSubscription AddOnboardingChangedCallback(
     base::RepeatingClosure callback);
 void NotifyOnboardingChanged();
