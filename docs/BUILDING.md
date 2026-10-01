@@ -27,7 +27,7 @@ mkdir chromium && cd chromium
 fetch --nohooks chromium                  # ~1-1.5h, ~63 GB
 
 cd src
-git checkout cd1d42cba19c64f3386d5dfa1475d620b6efb6a4   # = Chromium 151.0.7897.0
+git checkout 792bf6722e73a45aa9e47c163b9901bdc17f3230   # = Chromium 153.0.8010.53
 ./build/install-build-deps.sh --no-prompt # Linux only
 gclient sync -D --force --reset
 gclient runhooks

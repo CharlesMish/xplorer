@@ -17,3 +17,6 @@ __pycache__/
 # Secrets — never commit
 .env
 .env.*
+
+# Private Windows connect/release runbook (credentials) — never commit
+WINDOWS_HOW.MD

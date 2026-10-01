@@ -30,7 +30,7 @@ VERSION="${2:-dev}"
 ARCH="${3:-x64}"
 
 DIST="$XPLORER/dist"
-NAME="Xplorer-linux-$ARCH"
+NAME="Xplor-linux-$ARCH"   # must match package_linux.sh (display rename; identity stays Xplorer)
 STAGED="$DIST/$NAME"          # the tree package_linux.sh builds
 DEB_VER="${VERSION#v}"        # deb Version field: strip any leading 'v'
 DEB_ARCH="amd64"             # x64 -> amd64 in dpkg terms
