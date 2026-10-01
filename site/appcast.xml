@@ -3,6 +3,15 @@
     <channel>
         <title>Xplor</title>
         <item>
+            <title>0.8.15</title>
+            <pubDate>Thu, 01 Oct 2026 12:47:28 -0400</pubDate>
+            <sparkle:version>8010.815</sparkle:version>
+            <sparkle:shortVersionString>0.8.15</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <enclosure url="https://github.com/daniel-farina/xplorer/releases/download/v0.8.15/Xplor-macos-arm64.zip" length="184276894" type="application/octet-stream" sparkle:edSignature="sxfbqamE2JdmZ8YksLs465+q3qQqBfMjyTVnIDkKzgLG0S0FxgdKb6ydVzoVCwOGBkDeLkR0drBJp2UK+74uBg=="/>
+        </item>
+        <item>
             <title>0.8.12</title>
             <pubDate>Wed, 08 Jul 2026 12:00:00 -0400</pubDate>
             <sparkle:version>7897.812</sparkle:version>
