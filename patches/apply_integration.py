@@ -2753,8 +2753,13 @@ def apply_chromium_patch(src: Path) -> bool:
                       capture_output=True).returncode == 0:
         subprocess.run(base + [str(CHROMIUM_PATCH)], check=True)
         print(f"  applied {CHROMIUM_PATCH.name}")
-    elif subprocess.run(base + ["--reverse", "--check", str(CHROMIUM_PATCH)],
+    elif subprocess.run(base + ["--reverse", "--check",
+                                "--exclude=chrome/VERSION",
+                                "--exclude=chrome/app/settings_strings.grdp",
+                                str(CHROMIUM_PATCH)],
                         capture_output=True).returncode == 0:
+        # stamp_version rewrites those two files, so leave them out of the
+        # "already applied" check.
         print(f"  {CHROMIUM_PATCH.name} already applied")
     else:
         r = subprocess.run(base + ["--check", str(CHROMIUM_PATCH)],
