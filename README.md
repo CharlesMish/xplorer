@@ -173,6 +173,17 @@ tree = b.axtree(tab)                 # accessibility tree for grounding
 shot = b.screenshot(tab)             # PNG bytes — works on background tabs
 ```
 
+`Browser()` reads the URL and token from `~/.xplorer/gateway.json` (falling
+back to `~/.xbrowser/gateway.json` for older installs), including a non-default
+port chosen by the browser. Explicit `port` and `token` arguments take precedence;
+`XPLORER_TOKEN` takes precedence over the discovered token. For a fully manual
+connection, use `Browser(port=9334, token="...")`. A manual token without a
+discovery file retains port 9334 as the default. Discovery happens at construction;
+create a new `Browser()` if the gateway restarts or changes ports.
+
+Run SDK connection tests without a Chromium build:
+`python3 -m unittest discover -s sdk -p 'test_*.py'`.
+
 **Shell:**
 
 ```sh

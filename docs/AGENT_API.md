@@ -7,10 +7,15 @@ Two endpoints, both loopback-only, both live the moment the browser starts:
 | 9333 | CDP (WebSocket) | Full Chrome DevTools Protocol — point Playwright, Puppeteer, or any CDP client at `ws://127.0.0.1:9333`. No launch flags needed. |
 | 9334 | HTTP + WS | High-level Agent API (below). One round trip per primitive. |
 
-**Auth:** `Authorization: Bearer <token>` where the token is in
-`<profile dir>/agent_token` (e.g. `~/Library/Application Support/Chromium/agent_token`)
-or `$XPLORER_TOKEN`. The server binds 127.0.0.1 only; the token defends
-against cross-origin/localhost-probing attacks from web pages.
+**Discovery:** read the `url` and `token` from `~/.xplorer/gateway.json`, written
+by the browser at startup. The HTTP port may differ from 9334 when that port is
+occupied, so use the discovered URL. The Python SDK and MCP server also accept
+the legacy `~/.xbrowser/gateway.json` location when the current file is absent.
+
+**Auth:** send `Authorization: Bearer <token>`. The Python SDK accepts an explicit
+`token` argument or `$XPLORER_TOKEN` in preference to the discovered token, and an
+explicit `port` overrides the discovered URL. The server binds 127.0.0.1 only;
+the token defends against cross-origin/localhost-probing attacks from web pages.
 
 ## HTTP routes
 
