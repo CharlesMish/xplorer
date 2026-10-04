@@ -173,13 +173,9 @@ tree = b.axtree(tab)                 # accessibility tree for grounding
 shot = b.screenshot(tab)             # PNG bytes — works on background tabs
 ```
 
-`Browser()` reads the URL and token from `~/.xplorer/gateway.json` (falling
-back to `~/.xbrowser/gateway.json` for older installs), including a non-default
-port chosen by the browser. Explicit `port` and `token` arguments take precedence;
-`XPLORER_TOKEN` takes precedence over the discovered token. For a fully manual
-connection, use `Browser(port=9334, token="...")`. A manual token without a
-discovery file retains port 9334 as the default. Discovery happens at construction;
-create a new `Browser()` if the gateway restarts or changes ports.
+`Browser()` reads the URL and token from `~/.xplorer/gateway.json`, including
+the browser's current port. Pass `port` or `token` to override discovery; see
+[connection details](docs/AGENT_API.md) for precedence and legacy fallback.
 
 Run SDK connection tests without a Chromium build:
 `python3 -m unittest discover -s sdk -p 'test_*.py'`.
@@ -187,8 +183,10 @@ Run SDK connection tests without a Chromium build:
 **Shell:**
 
 ```sh
-TOKEN=$(python3 -c "import json,os;print(json.load(open(os.path.expanduser('~/.xplorer/gateway.json')))['token'])")
-curl -s -H "Authorization: Bearer $TOKEN" http://127.0.0.1:9334/tabs
+GW="$HOME/.xplorer/gateway.json"
+URL=$(python3 -c "import json,sys;print(json.load(open(sys.argv[1]))['url'])" "$GW")
+TOKEN=$(python3 -c "import json,sys;print(json.load(open(sys.argv[1]))['token'])" "$GW")
+curl -s -H "Authorization: Bearer $TOKEN" "${URL%/}/tabs"
 ```
 
 **MCP (recommended):** register `sdk/xplorer_mcp.py` (stdio, stdlib‑only) and your agent
