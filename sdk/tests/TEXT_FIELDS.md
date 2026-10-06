@@ -16,6 +16,9 @@ The runner serves only the fixture on an ephemeral loopback port, opens one
 uniquely owned tab, and checks both helpers against an input, a textarea, a
 plain contenteditable region, a wrapper that delegates focus, and a read-only
 input. Leave tabs in place while it runs. Expect `ALL PASS: 10/10 checks`.
+The runner temporarily sets its own process's `XPLORER_AGENT_ID` to the unique
+fixture-tab owner so MCP requests satisfy the native gateway's ownership check.
+It restores the previous value when finished; your shell configuration is unchanged.
 The tab stays open for inspection, and the local server stops when the runner
 exits. It does not submit forms or use external websites.
 
@@ -33,6 +36,7 @@ package and its Chromium browser, then run:
 
 ```sh
 node sdk/tests/text_fields.browser.cjs
+node sdk/tests/text_fields_runner.browser.cjs
 ```
 
 `PYTHON` can select a Python executable; `CHROMIUM_EXECUTABLE` can select an
@@ -41,6 +45,12 @@ Python helpers, executes it in Chromium, then uses a click and CDP
 `Input.insertText`, matching `AgentSession::Type`. It checks replacement text,
 newline/Unicode handling, input events, focus delegation, and read-only
 preservation. This is not a substitute for the live Xplor check above.
+
+The second check runs the complete Python smoke runner against Chromium behind
+a local HTTP fixture that rejects identified agents acting on another owner's
+tab. It seeds an unrelated inherited agent identity to catch ownership mistakes.
+This reproduces the first runner's failure at the first MCP click and verifies
+that the corrected runner passes without relaxing the ownership check.
 
 Scope: ordinary HTML fields and plain contenteditable regions. Rich editors
 with their own document model (for example, ProseMirror) need separate tests;

@@ -5,6 +5,7 @@ From sdk/: env -u XPLORER_TOKEN python3 text_fields_smoke.py
 No extra packages. Leaves the fixture tab open for inspection; no form submits.
 """
 import json
+import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import threading
@@ -50,7 +51,13 @@ def main():
     worker = threading.Thread(target=server.serve_forever, daemon=True)
     worker.start()
     url = f"http://127.0.0.1:{server.server_port}{route}"
+    previous_agent_id = os.environ.get("XPLORER_AGENT_ID")
     try:
+        # The native gateway enforces tab ownership for identified agents.
+        # MCP must act as the owner of the tab this runner creates, rather
+        # than its default "mcp" identity or an inherited agent identity.
+        # This changes only this process and is restored on every exit path.
+        os.environ["XPLORER_AGENT_ID"] = owner
         browser._req("POST", "/tabs", {
             "url": url, "owner": owner, "label": "Text-field check",
         })
@@ -115,6 +122,10 @@ def main():
         print("The test page stays open for inspection; close that tab when finished.")
         return int(bool(failures))
     finally:
+        if previous_agent_id is None:
+            os.environ.pop("XPLORER_AGENT_ID", None)
+        else:
+            os.environ["XPLORER_AGENT_ID"] = previous_agent_id
         server.shutdown()
         server.server_close()
         worker.join()
