@@ -25,6 +25,13 @@ CASES = (
     ("readonly", "readonly", "must not replace"),
 )
 
+# Diagnostics are restricted to this runner's local fixture fields.
+SNAPSHOT = ("(()=>({"
+            "active:document.activeElement?.id || document.activeElement?.tagName,"
+            "fields:Object.fromEntries("
+            "['single','multi','rich','wrapped-input','readonly']"
+            ".map(id=>[id,fieldState(id)]))}))()")
+
 
 def main():
     browser = Browser()
@@ -92,31 +99,41 @@ def main():
                              "e=>e.removeAttribute('data-aref'));"
                              f"document.getElementById({json.dumps(target)})"
                              ".setAttribute('data-aref','0');return true;})()")
+                before = browser.eval(tab, SNAPSHOT)
                 rejected = False
+                error = None
                 try:
                     if helper == "Page.type":
                         Page(browser, tab).type(0, replacement)
                     else:
                         xplorer_mcp.t_type({"tab": tab, "selector": "#" + target,
                                            "text": replacement})
-                except RuntimeError:
-                    if field != "readonly":
-                        raise
+                except RuntimeError as exc:
                     rejected = True
-                state = browser.eval(tab,
-                                     f"fieldState({json.dumps(field)})")
+                    error = str(exc)
+                snapshot = browser.eval(tab, SNAPSHOT)
+                state = snapshot["fields"][field]
                 # Browser.eval returns JS values by value through the gateway.
                 expected = "old text" if field == "readonly" else replacement
-                passed = state["value"] == expected
+                changed_others = [name for name in before["fields"]
+                                  if name != field and before["fields"][name]
+                                  != snapshot["fields"][name]]
+                passed = state["value"] == expected and not changed_others
                 if field == "readonly":
                     passed = passed and rejected and not state["events"]
                 else:
                     events = state["events"]
-                    passed = (passed and len(events) >= 2
+                    passed = (passed and not rejected and len(events) >= 2
                               and events[0]["value"] == ""
                               and events[-1]["value"] == expected
                               and events[-1]["trusted"])
                 print(f"{'PASS' if passed else 'FAIL'} {helper}: {field}")
+                if not passed:
+                    print("  expected:", json.dumps(expected, ensure_ascii=False))
+                    print("  observed:", json.dumps(state, ensure_ascii=False))
+                    print("  helper error:", error)
+                    print("  other fields changed:", changed_others)
+                    print("  fixture:", json.dumps(snapshot, ensure_ascii=False))
                 failures += not passed
         print(f"{'ALL PASS' if not failures else 'FAILED'}: {10 - failures}/10 checks")
         print("The test page stays open for inspection; close that tab when finished.")

@@ -177,18 +177,23 @@ def t_click(a):
 def t_type(a):
     tab = _require_agent_tab(a.get("tab"))
     sel = a.get("selector") or f'[data-aref="{a["ref"]}"]'
-    # A trusted click focuses the page's REAL editable input — even when the
-    # target is a role=combobox wrapper that delegates to a hidden input
-    # (Google Flights does this). We then clear and type into document
-    # .activeElement rather than guessing a descendant, which is what made
-    # autocomplete fields land text in the wrong box.
+    # Keep the trusted click for wrappers that delegate focus (for example,
+    # autocomplete widgets). For a directly selected field, resolve that
+    # field explicitly: a successful click response does not guarantee that
+    # focus moved, and clearing the previous activeElement loses other text.
     clicked = api("POST", f"/tabs/{tab}/click", {"selector": sel})
     if clicked.get("error"):
         raise RuntimeError("type: could not click the target text field")
-    prep = ("(()=>{const e=document.activeElement;"
+    prep = ("(()=>{const host=document.querySelector(" + json.dumps(sel) + ");"
+            "if(!host)return'no-host';"
+            "const direct=host.matches('input,textarea')||host.isContentEditable;"
+            "const e=direct?host:document.activeElement;"
             "if(!e||!(e.matches('input,textarea')||e.isContentEditable))"
             "return'no-input';"
             "if(e.disabled||e.readOnly)return'not-editable';"
+            "if(direct){e.focus();const active=document.activeElement;"
+            "if(active!==e&&!(e.isContentEditable&&active?.isContentEditable"
+            "&&active.contains(e)))return'no-focus';}"
             "document.querySelectorAll('[data-atype]')"
             ".forEach(x=>x.removeAttribute('data-atype'));"
             "e.setAttribute('data-atype','1');"

@@ -26,6 +26,8 @@ class TextFieldErrors(unittest.TestCase):
     def test_mcp_does_not_insert_after_failed_preparation(self):
         for response in ({}, {"exceptionDetails": {"text": "TypeError"}},
                          {"result": {"value": "no-input"}},
+                         {"result": {"value": "no-host"}},
+                         {"result": {"value": "no-focus"}},
                          {"result": {"value": "not-editable"}}):
             with self.subTest(response=response):
                 with patch.object(xplorer_mcp, "api", side_effect=[{}, response]) as api:

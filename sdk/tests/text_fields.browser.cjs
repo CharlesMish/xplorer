@@ -27,7 +27,7 @@ def api(method, path, body=None):
         return {'result': {'value': 'ok'}}
     return {}
 mcp.api = api
-mcp.t_type({'tab': 'fixture', 'selector': '#single', 'text': 'replacement'})
+mcp.t_type({'tab': 'fixture', 'ref': 0, 'text': 'replacement'})
 print(json.dumps(captured))
 `, sdk], {encoding: 'utf8'}));
 
@@ -71,6 +71,34 @@ print(json.dumps(captured))
           failures++;
           console.error(`FAIL ${helper}: ${field}: ${error.message}`);
         }
+      }
+    }
+    // A stale, writable activeElement must not let a disabled/read-only
+    // target or a target that refuses focus clear another field.
+    for (const [target, condition, expected] of [
+      ['single', 'disabled', 'not-editable'],
+      ['multi', 'readOnly', 'not-editable'],
+      ['multi', 'disabled', 'not-editable'],
+      ['single', 'redirect-focus', 'no-focus'],
+    ]) {
+      try {
+        await page.goto('about:blank');
+        await page.setContent(fs.readFileSync(path.join(sdk, 'fixtures/text_fields.html'), 'utf8'));
+        await page.evaluate(({target, condition}) => {
+          const el = document.getElementById(target);
+          const other = document.getElementById('wrapped-input');
+          el.setAttribute('data-aref', '0');
+          other.focus();
+          if (condition === 'redirect-focus') el.addEventListener('focus', () => other.focus());
+          else el[condition] = true;
+        }, {target, condition});
+        const before = await page.evaluate(() => [fieldState('single'), fieldState('multi'), fieldState('wrapped-input')]);
+        assert.equal(await page.evaluate(expressions.mcp), expected);
+        assert.deepEqual(await page.evaluate(() => [fieldState('single'), fieldState('multi'), fieldState('wrapped-input')]), before);
+        console.log(`PASS mcp guard: ${target} ${condition}`);
+      } catch (error) {
+        failures++;
+        console.error(`FAIL mcp guard: ${target} ${condition}: ${error.message}`);
       }
     }
   } finally { await browser.close(); }
