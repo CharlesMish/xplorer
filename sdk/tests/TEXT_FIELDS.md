@@ -53,18 +53,30 @@ The second check runs the complete Python smoke runner against Chromium behind
 a local HTTP fixture that rejects identified agents acting on another owner's
 tab. It seeds an unrelated inherited agent identity to catch ownership mistakes.
 It uses a fresh CDP session per request and raw mouse events, rather than
-Playwright's auto-waiting click. It runs both with normal click focus and with
-the default mousedown focus action suppressed (click handlers still run).
+Playwright's auto-waiting click. It runs with normal click focus, with
+the default mousedown focus action suppressed (click handlers still run),
+and with standalone clicks acknowledged but not dispatched.
 The latter reproduces the reported 6/10 pattern with the earlier MCP helper:
 direct fields are left unchanged while the previously focused field is
 overwritten, including when targeting a read-only field. The corrected helper
-explicitly focuses direct targets and checks focus before clearing them;
-wrappers still use their click-delegated editable field. This models a failure
-mode, not the established cause of native macOS focus behavior.
+explicitly focuses resolved targets and checks focus before clearing them.
+The dropped-click scenario reproduces the later native 9/10 result, including
+the wrapper's text being written into the previous contenteditable field.
+These model failure modes, not the established cause of native macOS clicks
+failing to move focus.
+
+For a wrapper, MCP uses its focused editable descendant when available;
+otherwise it requires exactly one editable descendant and explicitly focuses
+it. No field is cleared if resolution is ambiguous or focus fails. This narrows
+the old behavior that accepted any active field: widgets delegating focus to
+an input outside the selected wrapper must target that input directly. The
+helper does not treat unrelated focus as proof of successful delegation.
 
 The first browser check also exercises disabled/read-only targets with stale
-focus and a field that redirects focus elsewhere. No field is cleared when
-preparation rejects the target.
+focus and a field that redirects focus elsewhere. Wrapper checks cover missing
+and ambiguous descendants, disabled/read-only fields, rejected focus, and an
+already focused second field among multiple descendants. No field is cleared
+when preparation rejects the target.
 
 Scope: ordinary HTML fields and plain contenteditable regions. Rich editors
 with their own document model (for example, ProseMirror) need separate tests;

@@ -101,6 +101,49 @@ print(json.dumps(captured))
         console.error(`FAIL mcp guard: ${target} ${condition}: ${error.message}`);
       }
     }
+    // Wrappers must not turn unrelated stale focus into a replacement target.
+    for (const [condition, expected] of [
+      ['empty', 'no-input'],
+      ['ambiguous', 'ambiguous-input'],
+      ['disabled', 'not-editable'],
+      ['readOnly', 'not-editable'],
+      ['redirect-focus', 'no-focus'],
+      ['delegated-second', 'ok'],
+    ]) {
+      try {
+        await page.goto('about:blank');
+        await page.setContent(fs.readFileSync(path.join(sdk, 'fixtures/text_fields.html'), 'utf8'));
+        await page.evaluate(condition => {
+          const host = document.getElementById('wrapper');
+          const field = document.getElementById('wrapped-input');
+          const other = document.getElementById('rich');
+          host.setAttribute('data-aref', '0');
+          other.focus();
+          if (condition === 'empty') host.replaceChildren();
+          else if (condition === 'ambiguous' || condition === 'delegated-second') {
+            const second = document.createElement('input');
+            second.id = 'second'; second.value = 'second old text';
+            host.appendChild(second);
+            if (condition === 'delegated-second') second.focus();
+          } else if (condition === 'redirect-focus') field.addEventListener('focus', () => other.focus());
+          else field[condition] = true;
+        }, condition);
+        const snapshot = () => Array.from(document.querySelectorAll('input,textarea,[contenteditable]'))
+          .map(el => ({id: el.id, value: el.isContentEditable ? el.textContent : el.value}));
+        const before = await page.evaluate(snapshot);
+        assert.equal(await page.evaluate(expressions.mcp), expected);
+        if (expected === 'ok') {
+          await cdp.send('Input.insertText', {text: 'selected second field'});
+          before.find(el => el.id === 'second').value = 'selected second field';
+        }
+        assert.deepEqual(await page.evaluate(snapshot), before);
+        assert.deepEqual(await page.evaluate(() => fieldState('rich').events), []);
+        console.log(`PASS mcp wrapper guard: ${condition}`);
+      } catch (error) {
+        failures++;
+        console.error(`FAIL mcp wrapper guard: ${condition}: ${error.message}`);
+      }
+    }
   } finally { await browser.close(); }
   process.exitCode = failures ? 1 : 0;
 })().catch(error => {console.error(error); process.exitCode = 1;});

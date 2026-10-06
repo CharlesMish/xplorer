@@ -8,7 +8,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const {spawn} = require('node:child_process');
-async function run(suppressClickFocus) {
+async function run(scenario) {
  const browser=await chromium.launch({headless:true,
   ...(process.env.CHROMIUM_EXECUTABLE ? {executablePath:process.env.CHROMIUM_EXECUTABLE} : {})});
  const page=await browser.newPage();
@@ -43,9 +43,9 @@ async function run(suppressClickFocus) {
    }
    let out={};
    if(req.url==='/tabs'&&req.method==='GET') out={tabs:owner?[{id:'1:0',owner,url:page.url()}]:[]};
-   else if(req.url==='/tabs'&&req.method==='POST'){owner=data.owner;count++;await page.goto(data.url);if(suppressClickFocus)await page.evaluate(()=>document.addEventListener('mousedown',e=>e.preventDefault()));out={ok:true,owner};}
+   else if(req.url==='/tabs'&&req.method==='POST'){owner=data.owner;count++;await page.goto(data.url);if(scenario==='suppressed focus')await page.evaluate(()=>document.addEventListener('mousedown',e=>e.preventDefault()));out={ok:true,owner};}
    else if(req.url==='/tabs/1:0/eval')out=await cdp.send('Runtime.evaluate',{expression:data.expression,returnByValue:true,awaitPromise:true});
-   else if(req.url==='/tabs/1:0/click'){out=await click(data.selector);}
+   else if(req.url==='/tabs/1:0/click'){out=scenario==='dropped standalone click'?{clicked:true}:await click(data.selector);}
    else if(req.url==='/tabs/1:0/type'){out=await click(data.selector);if(!out.error)out=await cdp.send('Input.insertText',{text:data.text});}
    else throw Error('Unexpected route '+req.url);
    res.setHeader('Content-Type','application/json');res.end(JSON.stringify(out));
@@ -57,7 +57,7 @@ async function run(suppressClickFocus) {
  fs.writeFileSync(path.join(home,'.xplorer/gateway.json'),JSON.stringify({url:`http://127.0.0.1:${server.address().port}`,token:'fixture-token'}));
  try {
   const env={...process.env,HOME:home,XPLORER_AGENT_ID:'preexisting-agent'};delete env.XPLORER_TOKEN;
-  console.log(`Runner scenario: ${suppressClickFocus ? 'click does not move focus' : 'normal click focus'}`);
+  console.log(`Runner scenario: ${scenario}`);
   const p=spawn(process.env.PYTHON || 'python3',['sdk/text_fields_smoke.py'],{
    cwd:path.resolve(__dirname,'../..'),env,stdio:'inherit'});
   const exitCode=await new Promise((resolve,reject)=>{p.on('exit',resolve);p.on('error',reject);});
@@ -69,10 +69,13 @@ async function run(suppressClickFocus) {
  }finally{await new Promise(resolve=>server.close(resolve));await browser.close();fs.rmSync(home,{recursive:true,force:true});}
 }
 (async()=>{
- await run(false);
+ await run('normal click focus');
  // Reproduce stale focus without needing native macOS: mousedown's default
  // focus action is suppressed, while click handlers (including the wrapper's
  // explicit focus delegation) still run. This reproduces the reported 6/10
  // pattern with the previous MCP helper; it is not a claim about its Mac cause.
- await run(true);
+ await run('suppressed focus');
+ // A click response is not proof that its events or focus delegation ran.
+ // Leave focus on the previous field, reproducing the native 9/10 failure.
+ await run('dropped standalone click');
 })().catch(e=>{console.error(e);process.exitCode=1;});

@@ -28,6 +28,7 @@ class TextFieldErrors(unittest.TestCase):
                          {"result": {"value": "no-input"}},
                          {"result": {"value": "no-host"}},
                          {"result": {"value": "no-focus"}},
+                         {"result": {"value": "ambiguous-input"}},
                          {"result": {"value": "not-editable"}}):
             with self.subTest(response=response):
                 with patch.object(xplorer_mcp, "api", side_effect=[{}, response]) as api:
