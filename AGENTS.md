@@ -133,7 +133,7 @@ printf '%s\n' \
 Once registered, the typical loop is `xplorer_navigate` → `xplorer_observe` (get
 element `ref`s) → `xplorer_click` / `xplorer_type` / `xplorer_press` →
 `xplorer_read_text`. No CSS selectors or shell escaping required. (Start Xplor
-first, or the tools return "Xplor is not running".)
+first, or the tools return "Xplorer is not running".)
 
 ## Drive it (Python SDK)
 
