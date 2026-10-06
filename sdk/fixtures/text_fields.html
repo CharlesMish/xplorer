@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Xplor text-field check</title>
+<style>
+  :root { color-scheme: light dark; font: 17px/1.5 system-ui, sans-serif; }
+  body { max-width: 760px; margin: 40px auto; padding: 0 24px; }
+  h1 { font-size: 1.8rem; }
+  section { border: 1px solid #8888; border-radius: 12px; padding: 20px; margin: 16px 0; }
+  label, .label { display: block; font-weight: 650; margin-bottom: 8px; }
+  input, textarea, [contenteditable] { box-sizing: border-box; width: 100%; padding: 12px; font: inherit; border: 1px solid #888; border-radius: 6px; }
+  textarea, [contenteditable] { min-height: 90px; white-space: pre-wrap; }
+  output { display: block; font: 13px/1.5 ui-monospace, monospace; margin-top: 8px; }
+</style>
+<h1>Text-field check</h1>
+<p>This local page sends nothing to a website. The test runner replaces “old text”
+in each field and checks that the page receives an input event.</p>
+<section><label for="single">One-line field</label><input id="single" value="old text"><output id="single-status">Waiting</output></section>
+<section><label for="multi">Multiline message box</label><textarea id="multi">old text</textarea><output id="multi-status">Waiting</output></section>
+<section><div class="label" id="rich-label">Editable page area</div><div id="rich" contenteditable="true" aria-labelledby="rich-label">old text</div><output id="rich-status">Waiting</output></section>
+<section><label for="wrapped-input">Field inside a focus-delegating wrapper</label><div id="wrapper" role="combobox" aria-label="Wrapped field" aria-expanded="false"><input id="wrapped-input" value="old text"></div><output id="wrapped-input-status">Waiting</output></section>
+<section><label for="readonly">Read-only field (must remain unchanged)</label><input id="readonly" value="old text" readonly><output id="readonly-status">Waiting</output></section>
+<script>
+const fieldIds = ['single', 'multi', 'rich', 'wrapped-input', 'readonly'];
+const events = Object.fromEntries(fieldIds.map(id => [id, []]));
+function valueOf(el) { return el.isContentEditable ? el.textContent : el.value; }
+for (const id of fieldIds) {
+  document.getElementById(id).addEventListener('input', event => {
+    events[id].push({value: valueOf(event.target), trusted: event.isTrusted});
+    document.getElementById(id + '-status').textContent =
+      `Input events: ${events[id].length}; current text: ${JSON.stringify(valueOf(event.target))}`;
+  });
+}
+document.getElementById('wrapper').addEventListener('click', () => document.getElementById('wrapped-input').focus());
+window.resetField = id => {
+  const el = document.getElementById(id);
+  if (el.isContentEditable) el.textContent = 'old text'; else el.value = 'old text';
+  events[id] = [];
+  document.getElementById(id + '-status').textContent = 'Waiting';
+};
+window.fieldState = id => ({value: valueOf(document.getElementById(id)), events: events[id]});
+</script>
+</html>

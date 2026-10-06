@@ -182,19 +182,27 @@ def t_type(a):
     # (Google Flights does this). We then clear and type into document
     # .activeElement rather than guessing a descendant, which is what made
     # autocomplete fields land text in the wrong box.
-    api("POST", f"/tabs/{tab}/click", {"selector": sel})
+    clicked = api("POST", f"/tabs/{tab}/click", {"selector": sel})
+    if clicked.get("error"):
+        raise RuntimeError("type: could not click the target text field")
     prep = ("(()=>{const e=document.activeElement;"
-            "if(!e||!e.matches('input,textarea,[contenteditable=true]'))"
-            "return'no-input';document.querySelectorAll('[data-atype]')"
+            "if(!e||!(e.matches('input,textarea')||e.isContentEditable))"
+            "return'no-input';"
+            "if(e.disabled||e.readOnly)return'not-editable';"
+            "document.querySelectorAll('[data-atype]')"
             ".forEach(x=>x.removeAttribute('data-atype'));"
             "e.setAttribute('data-atype','1');"
-            "const s=Object.getOwnPropertyDescriptor("
-            "window.HTMLInputElement.prototype,'value');if(s&&s.set){"
-            "s.set.call(e,'');e.dispatchEvent(new Event('input',{bubbles:true}));}"
-            "return e.getAttribute('aria-label')||'ok';})()")
+            "if(e.isContentEditable){e.textContent='';}else{"
+            "const proto=e.localName==='textarea'?"
+            "window.HTMLTextAreaElement.prototype:window.HTMLInputElement.prototype;"
+            "Object.getOwnPropertyDescriptor(proto,'value').set.call(e,'');}"
+            "e.dispatchEvent(new Event('input',{bubbles:true}));"
+            "return'ok';})()")
     r = api("POST", f"/tabs/{tab}/eval", {"expression": prep})
-    if r.get("result", {}).get("value") == "no-input":
-        return text("type: clicking the target did not focus a text input")
+    # Do not type after a failed preparation (including a JavaScript exception).
+    # main() turns this into an MCP tool error rather than a successful result.
+    if r.get("result", {}).get("value") != "ok":
+        raise RuntimeError("type: could not prepare a writable text field")
     return text(json.dumps(api("POST", f"/tabs/{tab}/type",
                                {"selector": '[data-atype="1"]',
                                 "text": a["text"]})))
