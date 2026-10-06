@@ -14,6 +14,7 @@ import json
 import os
 import pathlib
 import re
+import urllib.error
 import urllib.request
 
 
@@ -93,8 +94,29 @@ class Browser:
         )
         # A gateway redirect must not forward its bearer token to another URL.
         req.add_unredirected_header("Authorization", f"Bearer {self.token}")
-        with urllib.request.urlopen(req, timeout=60) as r:
-            return json.load(r)
+        try:
+            with urllib.request.urlopen(req, timeout=60) as r:
+                return json.load(r)
+        except urllib.error.HTTPError as exc:
+            if exc.code == 401:
+                # Keep HTTPError's status, headers, and readable response body.
+                # Do not echo a server-supplied reason or any credential value.
+                exc.msg = (
+                    "Xplor gateway authentication was rejected. "
+                    "An explicit token or XPLORER_TOKEN overrides discovery; "
+                    "check whether that override is stale. Otherwise create a "
+                    "new Browser() to read the current gateway.json after a restart."
+                )
+            raise
+        except urllib.error.URLError as exc:
+            if isinstance(exc.reason, ConnectionRefusedError):
+                raise urllib.error.URLError(
+                    "Cannot connect to the Xplor gateway. Start Xplor, check any "
+                    "explicit port override, and create a new Browser() if the "
+                    "browser restarted or changed ports after sleep. "
+                    "The request was not retried."
+                ) from None
+            raise
 
     # -- primitives ---------------------------------------------------------
     def tabs(self) -> list[dict]:

@@ -24,6 +24,14 @@ token without a discovery file retains port 9334. The SDK does not forward its
 bearer token on HTTP redirects. The server binds 127.0.0.1 only;
 the token defends against cross-origin/localhost-probing attacks from web pages.
 
+**SDK connection errors:** an HTTP 401 includes a reminder that explicit tokens
+and `XPLORER_TOKEN` override discovery and may be stale after a browser restart.
+It remains a `urllib.error.HTTPError`, with its status, headers, and response
+body available to callers. A refused connection remains a `urllib.error.URLError`
+with guidance to launch Xplor, check an explicit port, or recreate `Browser()`.
+Other HTTP/transport errors retain their existing behavior. Requests are never
+automatically retried: replaying a browser action could perform it twice.
+
 ## HTTP routes
 
 Tab ids look like `"12:0"` (browser session id : tab index), from `GET /tabs`.
