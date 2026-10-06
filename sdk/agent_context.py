@@ -106,18 +106,24 @@ class Page:
         found = self.b.eval(self.tab, f"""(()=>{{
           const host=document.querySelector('[data-aref="{ref}"]');
           if(!host) return 'no-host';
-          let e = (host.matches('input,textarea,[contenteditable=true]'))
+          let e = (host.matches('input,textarea') || host.isContentEditable)
             ? host
             : host.querySelector('input,textarea,[contenteditable=true]')
               || host.closest('*').querySelector('input,textarea');
           if(!e) return 'no-input';
+          if(e.disabled || e.readOnly) return 'not-editable';
           document.querySelectorAll('[data-atype]').forEach(
             x=>x.removeAttribute('data-atype'));
           e.setAttribute('data-atype','1'); e.focus();
-          const s=Object.getOwnPropertyDescriptor(
-            window.HTMLInputElement.prototype,'value');
-          if(s&&s.set){{s.set.call(e,'');
-            e.dispatchEvent(new Event('input',{{bubbles:true}}));}}
+          if(e.isContentEditable){{
+            e.textContent='';
+          }}else{{
+            const proto=e.localName==='textarea'
+              ? window.HTMLTextAreaElement.prototype
+              : window.HTMLInputElement.prototype;
+            Object.getOwnPropertyDescriptor(proto,'value').set.call(e,'');
+          }}
+          e.dispatchEvent(new Event('input',{{bubbles:true}}));
           return 'ok';}})()""")
         if found != "ok":
             raise RuntimeError(f"type: could not focus input ({found})")

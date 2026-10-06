@@ -177,24 +177,42 @@ def t_click(a):
 def t_type(a):
     tab = _require_agent_tab(a.get("tab"))
     sel = a.get("selector") or f'[data-aref="{a["ref"]}"]'
-    # A trusted click focuses the page's REAL editable input — even when the
-    # target is a role=combobox wrapper that delegates to a hidden input
-    # (Google Flights does this). We then clear and type into document
-    # .activeElement rather than guessing a descendant, which is what made
-    # autocomplete fields land text in the wrong box.
-    api("POST", f"/tabs/{tab}/click", {"selector": sel})
-    prep = ("(()=>{const e=document.activeElement;"
-            "if(!e||!e.matches('input,textarea,[contenteditable=true]'))"
-            "return'no-input';document.querySelectorAll('[data-atype]')"
+    # A successful click response does not guarantee that focus moved.
+    # Accept a wrapper's focused editable descendant, or focus its sole
+    # editable descendant. Never clear an unrelated activeElement or guess
+    # between multiple fields. Cross-tree widgets must target their input.
+    clicked = api("POST", f"/tabs/{tab}/click", {"selector": sel})
+    if clicked.get("error"):
+        raise RuntimeError("type: could not click the target text field")
+    prep = ("(()=>{const host=document.querySelector(" + json.dumps(sel) + ");"
+            "if(!host)return'no-host';"
+            "const editable=x=>!!x&&(x.matches('input,textarea')||x.isContentEditable);"
+            "let e=host;"
+            "if(!editable(e)){e=document.activeElement;"
+            "if(!editable(e)||!host.contains(e)){"
+            "const fields=Array.from(host.querySelectorAll('input,textarea,[contenteditable]'))"
+            ".filter(x=>editable(x)&&(x.matches('input,textarea')"
+            "||!x.parentElement?.isContentEditable));"
+            "if(fields.length!==1)return fields.length?'ambiguous-input':'no-input';"
+            "e=fields[0];}}"
+            "if(e.disabled||e.readOnly)return'not-editable';"
+            "e.focus();const active=document.activeElement;"
+            "if(active!==e&&!(e.isContentEditable&&active?.isContentEditable"
+            "&&active.contains(e)))return'no-focus';"
+            "document.querySelectorAll('[data-atype]')"
             ".forEach(x=>x.removeAttribute('data-atype'));"
             "e.setAttribute('data-atype','1');"
-            "const s=Object.getOwnPropertyDescriptor("
-            "window.HTMLInputElement.prototype,'value');if(s&&s.set){"
-            "s.set.call(e,'');e.dispatchEvent(new Event('input',{bubbles:true}));}"
-            "return e.getAttribute('aria-label')||'ok';})()")
+            "if(e.isContentEditable){e.textContent='';}else{"
+            "const proto=e.localName==='textarea'?"
+            "window.HTMLTextAreaElement.prototype:window.HTMLInputElement.prototype;"
+            "Object.getOwnPropertyDescriptor(proto,'value').set.call(e,'');}"
+            "e.dispatchEvent(new Event('input',{bubbles:true}));"
+            "return'ok';})()")
     r = api("POST", f"/tabs/{tab}/eval", {"expression": prep})
-    if r.get("result", {}).get("value") == "no-input":
-        return text("type: clicking the target did not focus a text input")
+    # Do not type after a failed preparation (including a JavaScript exception).
+    # main() turns this into an MCP tool error rather than a successful result.
+    if r.get("result", {}).get("value") != "ok":
+        raise RuntimeError("type: could not prepare a writable text field")
     return text(json.dumps(api("POST", f"/tabs/{tab}/type",
                                {"selector": '[data-atype="1"]',
                                 "text": a["text"]})))
