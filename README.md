@@ -192,21 +192,52 @@ Full endpoint reference: [`docs/AGENT_API.md`](docs/AGENT_API.md).
 
 ## Download
 
-Latest builds — these links always point at the **newest release**. macOS builds
-are Developer ID–signed & notarized (open without Gatekeeper warnings); the
-Windows build isn't code‑signed yet (SmartScreen may warn — choose **More info →
-Run anyway**, and allow it in Defender if prompted).
+Latest builds — these links point at the **newest release**. macOS release apps
+are Developer ID–signed and notarized. The Windows build is not code-signed yet;
+see [Verification and security warnings](#verification-and-security-warnings)
+below if Windows or macOS blocks a download.
 
 | Platform | Direct download |
 |----------|-----------------|
-| **macOS — Apple Silicon** (M1/M2/M3/M4) | [**Xplorer-macos-arm64.dmg**](https://github.com/daniel-farina/xplorer/releases/latest/download/Xplorer-macos-arm64.dmg) · [.zip](https://github.com/daniel-farina/xplorer/releases/latest/download/Xplorer-macos-arm64.zip) |
-| **macOS — Intel** | [**Xplorer-macos-x86_64.dmg**](https://github.com/daniel-farina/xplorer/releases/latest/download/Xplorer-macos-x86_64.dmg) · [.zip](https://github.com/daniel-farina/xplorer/releases/latest/download/Xplorer-macos-x86_64.zip) |
-| **Windows x64** (10/11) | [**Xplorer-windows-x64-installer.exe**](https://github.com/daniel-farina/xplorer/releases/latest/download/Xplorer-windows-x64-installer.exe) · [.zip](https://github.com/daniel-farina/xplorer/releases/latest/download/Xplorer-windows-x64.zip) |
-| **Linux x64** (Ubuntu 22.04+ / Debian 12+) | [**Xplorer-linux-x64.tar.gz**](https://github.com/daniel-farina/xplorer/releases/latest/download/Xplorer-linux-x64.tar.gz) · [checksum](https://github.com/daniel-farina/xplorer/releases/latest/download/Xplorer-linux-x64.sha256.txt) |
+| **macOS — Apple Silicon** (M-series) | [**Xplor-macos-arm64.dmg**](https://github.com/daniel-farina/xplorer/releases/latest/download/Xplor-macos-arm64.dmg) · [.zip](https://github.com/daniel-farina/xplorer/releases/latest/download/Xplor-macos-arm64.zip) |
+| **macOS — Intel** | [**Xplor-macos-x86_64.dmg**](https://github.com/daniel-farina/xplorer/releases/latest/download/Xplor-macos-x86_64.dmg) · [.zip](https://github.com/daniel-farina/xplorer/releases/latest/download/Xplor-macos-x86_64.zip) |
+| **Windows x64** (10/11) | [**Xplor-windows-x64-installer.exe**](https://github.com/daniel-farina/xplorer/releases/latest/download/Xplor-windows-x64-installer.exe) · [.zip](https://github.com/daniel-farina/xplorer/releases/latest/download/Xplor-windows-x64.zip) |
+| **Linux x64** (Ubuntu 22.04+ / Debian 12+) | [**Xplor-linux-x64.tar.gz**](https://github.com/daniel-farina/xplorer/releases/latest/download/Xplor-linux-x64.tar.gz) · [checksum](https://github.com/daniel-farina/xplorer/releases/latest/download/Xplor-linux-x64.sha256.txt) |
 
-macOS: open the DMG and drag **Xplorer** to Applications. Windows: run the
-**installer** (`Xplorer-windows-x64-installer.exe` — creates Start‑menu & Desktop
+macOS: open the DMG and drag **Xplor** to Applications. Windows: run the
+**installer** (`Xplor-windows-x64-installer.exe` — creates Start‑menu & Desktop
 shortcuts), or grab the portable **`.zip`** and run **`Xplorer\Xplorer.exe`**.
+
+### Verification and security warnings
+
+The release archives use the **Xplor** name. Some internal names deliberately
+remain **Xplorer**: the Windows executable is `Xplorer\Xplorer.exe`, and the
+Mac executable inside `Xplor.app` is `Contents/MacOS/Xplorer`.
+
+On macOS, assess the installed **app**, without launching it:
+
+```sh
+spctl --assess --type execute --verbose=4 "/Applications/Xplor.app"
+```
+
+The expected result is `accepted` with `source=Notarized Developer ID`. Use the
+actual `.app` path if you installed it elsewhere. A `.dmg` is a different object
+and needs a different assessment type; do not use this command on the download
+container. See [Apple's code-signing guidance](https://developer.apple.com/library/archive/technotes/tn2206/).
+If the app is rejected, keep the output and report it with the release version
+rather than removing quarantine or disabling Gatekeeper.
+
+On Windows, a SmartScreen warning about an unrecognized app is different from a
+named malware detection in Defender. If Defender identifies a threat, leave it
+quarantined and pause testing. Report the release version, affected filename,
+detection name, and SHA-256 (if already available) to the maintainer; Microsoft
+also accepts [samples for analysis](https://www.microsoft.com/en-us/wdsi/filesubmission).
+Do not restore a quarantined file just to obtain its hash. A detection needs
+review; it is not automatically a false positive because a project is open source.
+
+Release checksums establish that a download matches the published artifact;
+they do not independently establish that it is safe. Likewise, notarization is
+not a comprehensive security audit.
 
 ### Linux install
 
@@ -218,11 +249,11 @@ and Debian 12+ should work. **Requires an x86_64 CPU** (Intel/AMD). ARM64 Linux
 
 ```sh
 cd ~/Downloads   # or wherever you want it
-curl -LO https://github.com/daniel-farina/xplorer/releases/latest/download/Xplorer-linux-x64.tar.gz
-curl -LO https://github.com/daniel-farina/xplorer/releases/latest/download/Xplorer-linux-x64.sha256.txt
-sha256sum -c Xplorer-linux-x64.sha256.txt      # prints "...tar.gz: OK"
-tar -xzf Xplorer-linux-x64.tar.gz
-cd Xplorer-linux-x64
+curl -LO https://github.com/daniel-farina/xplorer/releases/latest/download/Xplor-linux-x64.tar.gz
+curl -LO https://github.com/daniel-farina/xplorer/releases/latest/download/Xplor-linux-x64.sha256.txt
+sha256sum -c Xplor-linux-x64.sha256.txt      # prints "...tar.gz: OK"
+tar -xzf Xplor-linux-x64.tar.gz
+cd Xplor-linux-x64
 ./xplorer
 ```
 
@@ -230,7 +261,7 @@ The `xplorer` wrapper launches the real `chrome` binary beside it. On first star
 the Agent Gateway writes `~/.xplorer/gateway.json` and listens on `127.0.0.1:9334`
 (confirm with `cat ~/.xplorer/gateway.json`).
 
-**Optional — add a menu shortcut** (while still inside `Xplorer-linux-x64/`):
+**Optional — add a menu shortcut** (while still inside `Xplor-linux-x64/`):
 
 ```sh
 sed "s|@@INSTALL_DIR@@|$PWD|g" xplorer.desktop > ~/.local/share/applications/xplorer.desktop
@@ -288,7 +319,7 @@ git clone https://github.com/daniel-farina/xplorer.git
 
 **Linux** from source (Ubuntu 24.04+ recommended): same overlay, then
 `./build/install-build-deps.sh --no-prompt`, `gclient runhooks`, and
-`./scripts/package_linux.sh` to produce `dist/Xplorer-linux-x64.tar.gz`.
+`./scripts/package_linux.sh` to produce `dist/Xplor-linux-x64.tar.gz`.
 See `scripts/linux_buildbox_bootstrap.sh` for an unattended remote-build script.
 
 The first build takes a few hours (it compiles all of Chromium locally). After that,

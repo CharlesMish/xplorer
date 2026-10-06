@@ -1,6 +1,6 @@
-# XBrowser — the AI-native browser
+# Xplor — the AI-native browser
 
-XBrowser is a full **Chromium fork** (Blink, V8, the multiprocess sandbox — the
+Xplor is a full **Chromium fork** (Blink, V8, the multiprocess sandbox — the
 real engine, not Electron or a wrapper) modified at the C++ source level so any
 agent can connect and drive it fast. This file is the guide for **agents and
 the people wiring them up**.
@@ -11,11 +11,19 @@ the people wiring them up**.
 
 ### Option A — download a release (recommended)
 
-1. Grab the latest `XBrowser-macos-arm64.dmg` (or `.zip`) from the
-   [Releases](../../releases) page.
-2. Open the DMG and drag **XBrowser** to Applications.
-3. First launch: macOS Gatekeeper may warn (the build is self-signed). Right-
-   click → Open, or run `xattr -dr com.apple.quarantine /Applications/XBrowser.app`.
+1. Pick the current **Xplor** release for your platform from the
+   [Releases](https://github.com/daniel-farina/xplorer/releases) page. On an
+   Apple Silicon Mac, use `Xplor-macos-arm64.dmg`; Intel Macs use
+   `Xplor-macos-x86_64.dmg`.
+2. On macOS, open the DMG and drag **Xplor** to Applications. Release apps are
+   Developer ID–signed and notarized; they are not the old self-signed builds.
+3. Follow the README's [verification guidance](README.md#verification-and-security-warnings)
+   if the OS blocks the app. Assess the installed `.app`, and do not remove
+   quarantine or disable protection to work around an unexplained rejection.
+
+For Windows/Linux download names, prerequisites, and launch commands, see
+[Download](README.md#download). Product branding is Xplor, but internal executable
+names and API/tool identifiers may still use Xplorer; keep those names intact.
 
 ### Option B — build from source
 
@@ -26,16 +34,16 @@ git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git
 export PATH="$PWD/depot_tools:$PATH"
 mkdir chromium && cd chromium && fetch --no-history chromium && cd ..
 git clone https://github.com/daniel-farina/xplorer.git
-./xplorer/apply.sh ./chromium/src      # overlay XBrowser onto Chromium
+./xplorer/apply.sh ./chromium/src      # overlay Xplor onto Chromium
 ./xplorer/build.sh ./chromium/src      # gn gen + autoninja  (the long step)
-open ./chromium/src/out/aether/XBrowser.app
+open ./chromium/src/out/aether/Xplorer.app
 ```
 
 ---
 
 ## Launch
 
-XBrowser is a normal browser — double-click it. The **Agent Gateway** starts
+Xplor is a normal browser — double-click it. The **Agent Gateway** starts
 automatically and listens on loopback:
 
 | Port | Protocol | Use |
@@ -45,7 +53,7 @@ automatically and listens on loopback:
 
 ### Connecting — start here
 
-**Read one fixed file: `~/.xplorer/gateway.json`.** XBrowser writes it at startup:
+**Read one fixed file: `~/.xplorer/gateway.json`.** Xplor writes it at startup:
 
 ```json
 { "url": "http://127.0.0.1:9334", "token": "…", "cdp_url": "ws://127.0.0.1:9333" }
@@ -56,12 +64,12 @@ hunt for the token under the profile dir — always read `~/.xplorer/gateway.jso
 (`GET /` is unauthenticated and tells you this; a missing/bad token returns
 **401** with a `fix` message, not a 404.)
 
-The **easiest** way to drive XBrowser is the bundled **MCP server** — your agent
+The **easiest** way to drive Xplor is the bundled **MCP server** — your agent
 gets native `xplorer_*` tools and never touches curl/JSON. See "MCP" below.
 
 For headless / server use:
 ```sh
-XBrowser.app/Contents/MacOS/XBrowser --headless=new --disable-gpu \
+/Applications/Xplor.app/Contents/MacOS/Xplorer --headless=new --disable-gpu \
   --user-data-dir=/tmp/xplorer --no-first-run
 ```
 
@@ -124,8 +132,8 @@ printf '%s\n' \
 
 Once registered, the typical loop is `xplorer_navigate` → `xplorer_observe` (get
 element `ref`s) → `xplorer_click` / `xplorer_type` / `xplorer_press` →
-`xplorer_read_text`. No CSS selectors or shell escaping required. (Start XBrowser
-first, or the tools return "XBrowser is not running".)
+`xplorer_read_text`. No CSS selectors or shell escaping required. (Start Xplor
+first, or the tools return "Xplorer is not running".)
 
 ## Drive it (Python SDK)
 
@@ -170,7 +178,7 @@ Tab ids look like `"892053753:0"` (browser session id : tab index).
 
 ### Identify yourself (shows in the on-screen HUD)
 
-When an agent drives a tab, XBrowser shows a live overlay in that tab — an
+When an agent drives a tab, Xplor shows a live overlay in that tab — an
 animated badge with the model name and a metrics bar (calls, KB in/out, clicks,
 reads…). It only appears while you're acting and fades after ~6s idle. To make
 it show **who** is driving, send these headers on every request:
@@ -186,7 +194,7 @@ also at `GET /stats`. (Via the MCP server, set `XPLORER_AGENT_ID` /
 
 ### Live action highlighting
 
-While an agent works, XBrowser flashes a color-coded box over what it touches —
+While an agent works, Xplor flashes a color-coded box over what it touches —
 **clicks** (pink), **typed** fields (blue), **read** regions (green), and every
 element it **scans/links** it identifies (cyan / gold). Toggle it from the
 **✦ highlights** button in the HUD badge (on by default, remembered per-site).
@@ -213,13 +221,13 @@ tabs show `owner: ""`.
 
 ## What makes it AI-native (built into the C++, no flags)
 
-- **Drive any tab while XBrowser is in the background** — control is pure CDP
+- **Drive any tab while Xplor is in the background** — control is pure CDP
   against the renderer; the window need not be focused or visible.
 - **Many tabs in parallel** — background/occlusion throttling is disabled by
   default, so background tabs run full-speed.
 - **Screenshot hidden/occluded/inactive tabs** — the gateway holds a
   `WebContents::IncrementCapturerCount()` ref during capture, forcing frame
-  production. Stock Chrome hangs here; XBrowser doesn't.
+  production. Stock Chrome hangs here; Xplor doesn't.
 - **First-class automation** — `navigator.webdriver` stays `false`; no
   "controlled by automation" banner.
 
